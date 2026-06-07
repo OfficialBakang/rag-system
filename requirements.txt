@@ -1,0 +1,31 @@
+# Core RAG
+anthropic>=0.25.0
+openai>=1.30.0
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+
+# Document parsing
+pypdf>=4.0.0
+markdown-it-py>=3.0.0
+beautifulsoup4>=4.12.0
+
+# API + serving
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+pydantic>=2.7.0
+
+# Telemetry
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp>=1.24.0
+
+# Evals
+ragas>=0.1.9
+datasets>=2.19.0
+
+# Utils
+python-dotenv>=1.0.0
+tiktoken>=0.7.0
+numpy>=1.26.0
+pandas>=2.2.0
+tqdm>=4.66.0
