@@ -14,8 +14,8 @@ class Document:
     """Raw document loaded from disk before chunking."""
     doc_id: str
     content: str
-    source: str                        # original file path
-    format: str                        # "pdf" | "markdown" | "text" | "html"
+    source: str
+    format: str
     metadata: dict[str, Any] = field(default_factory=dict)
     loaded_at: float = field(default_factory=time.time)
 
@@ -26,10 +26,10 @@ class Document:
 @dataclass
 class Chunk:
     """A single text chunk produced by the chunker, ready for embedding."""
-    chunk_id: str                      # deterministic hash of content
-    doc_id: str                        # parent document
+    chunk_id: str
+    doc_id: str
     text: str
-    index: int                         # position within parent doc
+    index: int
     token_count: int
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -49,8 +49,8 @@ class EmbeddedChunk:
 class RetrievedChunk:
     """A chunk returned from vector similarity search, with its score."""
     chunk: Chunk
-    score: float                       # cosine similarity 0-1
-    rank: int                          # position in result list (1-indexed)
+    score: float
+    rank: int
 
 
 @dataclass
@@ -72,3 +72,54 @@ class GenerationResult:
     @property
     def sources(self) -> list[str]:
         return list({r.chunk.metadata.get("source", "unknown") for r in self.retrieved_chunks})
+
+
+@dataclass
+class EvalResult:
+    """
+    Evaluation scores for a single query-answer pair.
+    All scores are 0.0 – 1.0. Higher is better.
+    """
+    trace_id: str
+    query: str
+    answer: str
+    context_texts: list[str]
+
+    # Core RAGAS-style metrics
+    faithfulness: float         # are all claims grounded in the context?
+    answer_relevance: float     # does the answer address the question?
+    context_precision: float    # are retrieved chunks relevant?
+    context_recall: float       # did we retrieve everything needed?
+
+    # Metadata
+    model: str = ""
+    eval_model: str = ""
+    timestamp: float = field(default_factory=time.time)
+    latency_ms: float = 0.0
+
+    @property
+    def overall_score(self) -> float:
+        """Weighted average of all four metrics."""
+        return round(
+            (self.faithfulness * 0.35 +
+             self.answer_relevance * 0.30 +
+             self.context_precision * 0.20 +
+             self.context_recall * 0.15),
+            4,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "trace_id": self.trace_id,
+            "query": self.query,
+            "answer": self.answer,
+            "faithfulness": self.faithfulness,
+            "answer_relevance": self.answer_relevance,
+            "context_precision": self.context_precision,
+            "context_recall": self.context_recall,
+            "overall_score": self.overall_score,
+            "model": self.model,
+            "eval_model": self.eval_model,
+            "timestamp": self.timestamp,
+            "latency_ms": self.latency_ms,
+        }
