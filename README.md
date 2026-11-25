@@ -237,6 +237,31 @@ Configure generation and evaluation models according to their availability in yo
 
 Never commit your `.env` file or real API keys.
 
+
+Copy the example environment configuration:
+
+### Windows (CMD)
+
+```cmd
+copy .env.example .env
+```
+
+### Linux / macOS
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and provide your OpenAI and Anthropic API keys.
+
+The remaining settings can be adjusted according to your
+retrieval, generation, evaluation and observability requirements.
+
+See [.env.example](.env.example) for the available configuration.
+
+Never commit your actual `.env` file.
+
+
 ### 5. Run the Pipeline Smoke Test
 
 ```bash
