@@ -1,0 +1,7 @@
+
+# Optional machine learning dependencies
+# Required when cross-encoder reranking is enabled.
+
+-r requirements.txt
+
+sentence-transformers==6.3.0
