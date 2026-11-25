@@ -1,4 +1,51 @@
-.env 
-__pycache__/ 
-.venv/ 
-data/chroma/ 
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.Python
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Linting and type checking
+.ruff_cache/
+.mypy_cache/
+
+# Vector database storage
+data/chroma/
+
+# Runtime traces and evaluation records
+data/*.jsonl
+
+# Logs
+*.log
+
+# IDE configuration
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
