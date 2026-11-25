@@ -1,126 +1,705 @@
-# RAG System with Telemetry & Evals
 
-A production-grade Retrieval-Augmented Generation pipeline built for a portfolio.  
-Demonstrates: vector search, LLM grounding, OpenTelemetry instrumentation, and automated evaluation.
+# RAG System — Retrieval-Augmented Generation, Observability & Evaluation
 
----
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-Embeddings-412991)
+![Anthropic](https://img.shields.io/badge/Anthropic-Claude-D97757)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector%20Database-orange)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-blue)
+![Architecture](https://img.shields.io/badge/Architecture-RAG-7C3AED)
 
-## Project structure
+An end-to-end Retrieval-Augmented Generation (RAG) system combining semantic search, document ingestion, grounded LLM generation, OpenTelemetry instrumentation and automated answer evaluation through a FastAPI backend.
 
+Designed to demonstrate practical AI engineering, backend development, vector database integration and production-oriented LLM application architecture.
+
+## Overview
+
+Large language models can generate plausible answers without sufficient supporting evidence. Retrieval-Augmented Generation addresses this limitation by retrieving relevant information from an external knowledge base before generating a response.
+
+This project implements a modular RAG pipeline that processes documents, stores vector embeddings, retrieves relevant passages and generates answers using the retrieved context.
+
+Beyond generation, the system includes observability and evaluation capabilities to help developers understand retrieval behaviour, response quality, latency and token consumption.
+
+## Key Features
+
+### Document Processing
+
+- PDF, Markdown, HTML and plain-text ingestion.
+- Raw text and file upload support.
+- Token-aware document chunking with configurable overlap.
+- Batch embedding generation.
+- Persistent vector storage with ChromaDB.
+- Source metadata preservation.
+- Document deletion and collection management.
+
+### Intelligent Retrieval
+
+- LLM-powered query rewriting.
+- Semantic similarity search.
+- Configurable top-K retrieval.
+- Optional cross-encoder reranking.
+- Retrieval metadata and relevance scores.
+
+### Grounded Generation
+
+- Anthropic Claude integration.
+- Context-aware prompt construction.
+- Source attribution.
+- Instructions to abstain when retrieved information is insufficient.
+- Streaming responses through Server-Sent Events.
+- Token consumption and generation latency reporting.
+
+### Observability
+
+- OpenTelemetry instrumentation across major pipeline operations.
+- Console span exporting.
+- Optional OTLP trace exporting.
+- Local JSONL trace persistence.
+- Retrieval and generation diagnostics.
+- Aggregate latency and evaluation statistics.
+
+### Automated Evaluation
+
+- Custom LLM-as-judge evaluation engine.
+- Faithfulness assessment.
+- Answer relevance scoring.
+- Context precision estimation.
+- Context recall estimation.
+- Weighted overall quality score.
+- Batch evaluation and persistent evaluation records.
+
+### Backend API
+
+- FastAPI REST interface.
+- Pydantic request and response models.
+- Interactive OpenAPI documentation.
+- Document ingestion and management endpoints.
+- Query, streaming and evaluation endpoints.
+- Health and observability endpoints.
+
+## System Architecture
+
+### Document Ingestion
+
+```mermaid
+flowchart LR
+    A["Source Documents"] --> B["Document Loader"]
+    B --> C["Token Chunker"]
+    C --> D["OpenAI Embeddings"]
+    D --> E[("ChromaDB")]
+
+    F["OpenTelemetry"] -.-> B
+    F -.-> C
+    F -.-> D
+    F -.-> E
 ```
-rag-system/
-├── core/
-│   ├── models.py            # Shared dataclasses (Document, Chunk, RetrievedChunk, …)
-│   ├── loader.py            # Document loader — PDF, Markdown, text, HTML
-│   ├── chunker.py           # Sentence-aware, overlapping token chunker
-│   ├── embedder.py          # OpenAI batch embedder (text-embedding-3-small)
-│   ├── vector_store.py      # ChromaDB wrapper — upsert, query, delete
-│   ├── retriever.py         # Two-stage retrieval: query rewriting + vector search
-│   ├── generator.py         # Grounded answer generation with Claude
-│   └── ingestion_pipeline.py # Orchestrates loader → chunker → embedder → store
-│
-├── data/
-│   ├── docs/                # Drop your source documents here
-│   └── chroma/              # ChromaDB persists here (auto-created)
-│
-├── tests/                   # Unit tests (Phase 4)
-│
-├── .env.example             # Copy to .env and fill in API keys
-├── requirements.txt
-├── test_pipeline.py         # Phase 1 smoke test
-└── README.md
+
+The ingestion pipeline converts source documents into smaller text passages, generates embeddings and stores the resulting vectors alongside document metadata.
+
+### Retrieval and Generation
+
+```mermaid
+flowchart TD
+    A["User / API Client"] --> B["FastAPI"]
+    B --> C["Query Rewriter"]
+    C --> D["Query Embedding"]
+    D --> E["Vector Search"]
+    V[("ChromaDB")] --> E
+
+    E --> F{"Reranking Enabled?"}
+    F -->|Yes| G["Cross-Encoder Reranker"]
+    F -->|No| H["Context Builder"]
+    G --> H
+
+    H --> I["Claude LLM"]
+    I --> J["Grounded Answer"]
+    J --> K["API Response"]
+
+    J -.-> L["Optional Evaluation"]
+    L --> M[("Evaluation Records")]
+
+    T["OpenTelemetry"] -.-> C
+    T -.-> D
+    T -.-> E
+    T -.-> I
 ```
 
----
+The retriever reformulates the question, embeds it and searches the vector database for relevant passages. The generator combines the original question with the retrieved context before requesting a response from Claude.
 
-## Setup
+### Observability and Evaluation
 
-### 1. Clone and create environment
+```mermaid
+flowchart LR
+    A["RAG Pipeline"] --> B["OpenTelemetry Spans"]
+    B --> C["Console Export"]
+    B --> D["Optional OTLP Collector"]
+    B --> E[("traces.jsonl")]
+
+    A --> F["LLM-as-Judge"]
+    F --> G[("evals.jsonl")]
+
+    E --> H["FastAPI Observability Endpoints"]
+    G --> H
+```
+
+## Technology Stack
+
+| Technology | Responsibility |
+|---|---|
+| Python | Core application development |
+| FastAPI | REST API and serving layer |
+| Pydantic | Request and response validation |
+| Uvicorn | ASGI application server |
+| OpenAI | Text embedding generation |
+| Anthropic Claude | Query rewriting, generation and evaluation |
+| ChromaDB | Persistent vector database |
+| Sentence Transformers | Optional cross-encoder reranking |
+| tiktoken | Token counting |
+| PyPDF | PDF text extraction |
+| Beautiful Soup | HTML processing |
+| markdown-it-py | Markdown processing |
+| OpenTelemetry | Pipeline instrumentation |
+| OTLP | Optional trace export |
+| JSONL | Local trace and evaluation persistence |
+| python-dotenv | Environment configuration |
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11 or newer.
+- Git.
+- An OpenAI API key.
+- An Anthropic API key.
+
+Python 3.11 is recommended as an initial development environment. Compatibility with additional Python versions has not yet been established through a CI matrix.
+
+API usage may incur charges.
+
+### 1. Clone the Repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/OfficialBakang/rag-system.git
 cd rag-system
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
 ```
 
-### 2. Configure API keys
+### 2. Create a Virtual Environment
+
+Windows Command Prompt:
+
+```cmd
+py -3.11 -m venv .venv
+.venv\Scripts\activate.bat
+```
+
+Linux or macOS:
 
 ```bash
-cp .env.example .env
-# Edit .env — add your ANTHROPIC_API_KEY and OPENAI_API_KEY
+python3.11 -m venv .venv
+source .venv/bin/activate
 ```
 
-### 3. Run the smoke test
+### 3. Install Dependencies
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 4. Configure Environment Variables
+
+Create a `.env` file in the repository root.
+
+```dotenv
+OPENAI_API_KEY=your_openai_api_key
+ANTHROPIC_API_KEY=your_anthropic_api_key
+
+CHUNK_SIZE=400
+CHUNK_OVERLAP=80
+RETRIEVAL_TOP_K=6
+RERANK_TOP_N=3
+
+LLM_MODEL=claude-sonnet-4-5
+MAX_TOKENS=1024
+EVAL_MODEL=claude-sonnet-4-5
+
+OTEL_ENABLED=false
+OTEL_SERVICE_NAME=rag-system
+
+TRACE_LOG_PATH=./data/traces.jsonl
+EVAL_LOG_PATH=./data/evals.jsonl
+```
+
+Replace the API key placeholders with your credentials.
+
+Configure generation and evaluation models according to their availability in your Anthropic account.
+
+Never commit your `.env` file or real API keys.
+
+### 5. Run the Pipeline Smoke Test
 
 ```bash
 python test_pipeline.py
 ```
 
-Expected output:
-```
-▶  Ingesting sample documents...
-   Collection size: N chunks
+The script ingests sample documents, performs retrieval, generates an answer and reports source information, token usage and latency.
 
-▶  Query: 'What is RAG and how does it reduce hallucinations?'
-   Retrieved 4 chunks:
-   [1] score=0.847  source=rag_overview.txt
-   ...
+### 6. Start the API
 
-ANSWER:
-RAG (Retrieval-Augmented Generation) combines a retrieval system with an LLM...
+```bash
+python -m uvicorn api:app --reload --host 127.0.0.1 --port 8000
 ```
 
----
+The API will be available at:
 
-## Architecture
+http://127.0.0.1:8000
 
-```
-INGESTION                          QUERY
-─────────────────────────────      ─────────────────────────────────────────
-Documents → Loader → Chunker       User Query → Query Rewriter → Embedder
-              ↓                                    ↓
-           Embedder               Vector Store ← similarity search
-              ↓                                    ↓
-         Vector Store             Reranker (optional cross-encoder)
-                                            ↓
-                                   Prompt Builder → Claude LLM → Answer
-```
+### Interactive API Documentation
 
-### Key design decisions
+- Swagger UI: http://127.0.0.1:8000/docs
+- ReDoc: http://127.0.0.1:8000/redoc
+- OpenAPI schema: http://127.0.0.1:8000/openapi.json
 
-| Decision | Choice | Rationale |
+## API Reference
+
+### Document Ingestion
+
+| Method | Endpoint | Description |
 |---|---|---|
-| Vector store | ChromaDB | Zero infra, persistent, swappable |
-| Embedding model | text-embedding-3-small | Best price/perf ratio |
-| Chunk size | 400 tokens | Balances context vs retrieval precision |
-| Overlap | 80 tokens (20%) | Prevents meaning loss at boundaries |
-| Query rewriting | Claude (lightweight call) | ~10-15% recall improvement |
-| Reranking | cross-encoder/ms-marco-MiniLM-L-6-v2 | Optional; improves precision |
-| LLM | Claude Sonnet 4 | Strong grounding, citation-following |
+| POST | `/ingest/text` | Add raw text to the knowledge base |
+| POST | `/ingest/file` | Upload and process a supported document |
 
----
+### Query and Generation
 
-## Phases
-
-| Phase | Status | Description |
+| Method | Endpoint | Description |
 |---|---|---|
-| 1 — Core pipeline | ✅ Done | Load → chunk → embed → store → retrieve → generate |
-| 2 — Telemetry | 🔜 Next | OTel spans on every stage |
-| 3 — Evals | 🔜 | RAGAS faithfulness, relevance, precision |
-| 4 — API | 🔜 | FastAPI endpoints |
-| 5 — Dashboard | 🔜 | React dashboard with live metrics |
+| POST | `/query` | Retrieve context and generate an answer |
+| POST | `/query/stream` | Stream answer tokens using SSE |
+
+### Evaluation
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/evaluate` | Evaluate an answer against supplied context |
+| GET | `/evals` | Retrieve recent evaluation records |
+
+### Observability and Health
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/health` | Check application health |
+| GET | `/metrics` | Retrieve aggregate pipeline statistics |
+| GET | `/traces` | Retrieve recent span records |
+
+### Document Management
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/sources` | List available document sources |
+| DELETE | `/documents/{doc_id}` | Remove chunks belonging to a document |
+
+## API Usage Examples
+
+The examples below use curl with Bash-compatible quoting. Windows users can use the interactive Swagger UI instead.
+
+### Ingest Raw Text
+
+```bash
+curl -X POST http://127.0.0.1:8000/ingest/text \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Retrieval-Augmented Generation combines information retrieval with language model generation.",
+    "source": "rag-notes.txt"
+  }'
+```
+
+### Upload a Document
+
+```bash
+curl -X POST http://127.0.0.1:8000/ingest/file \
+  -F "file=@document.pdf"
+```
+
+### Query the Knowledge Base
+
+```bash
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "How does retrieval-augmented generation work?",
+    "top_k": 4,
+    "evaluate": false
+  }'
+```
+
+The response includes:
+
+- Generated answer.
+- Original query.
+- Source documents.
+- Retrieved passages.
+- Retrieval scores and ranks.
+- Generation model.
+- Prompt and completion token counts.
+- Generation latency.
+- Trace identifier.
+- Optional evaluation results.
+
+### Query With Evaluation
+
+```bash
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is retrieval-augmented generation?",
+    "top_k": 4,
+    "evaluate": true
+  }'
+```
+
+Enabling evaluation performs additional LLM calls and may increase latency and API costs.
+
+### Stream a Response
+
+```bash
+curl -N -X POST http://127.0.0.1:8000/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Explain RAG architecture.",
+    "top_k": 4
+  }'
+```
+
+### Inspect Pipeline Metrics
+
+```bash
+curl http://127.0.0.1:8000/metrics
+```
+
+### Inspect Recent Traces
+
+```bash
+curl "http://127.0.0.1:8000/traces?limit=10"
+```
+
+### Check Application Health
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+## Evaluation Framework
+
+The system implements a custom Claude-based LLM-as-judge evaluator inspired by common RAGAS evaluation dimensions.
+
+Each evaluation dimension receives a score between 0 and 1 together with an explanation from the evaluator.
+
+### Evaluation Metrics
+
+| Metric | Weight | Purpose |
+|---|---:|---|
+| Faithfulness | 35% | Assesses support for generated claims within retrieved context |
+| Answer relevance | 30% | Assesses how well the answer addresses the question |
+| Context precision | 20% | Estimates the usefulness of retrieved passages |
+| Context recall | 15% | Estimates whether the retrieved information is sufficient |
+
+### Overall Score
+
+The aggregate score combines the four evaluation dimensions:
+
+```text
+Overall Score =
+    (0.35 × Faithfulness)
+  + (0.30 × Answer Relevance)
+  + (0.20 × Context Precision)
+  + (0.15 × Context Recall)
+```
+
+Evaluation records are persisted locally in:
+
+```text
+data/evals.jsonl
+```
+
+The evaluator supports individual and batch evaluations.
+
+These scores are model-based estimates rather than independently verified accuracy measurements. Context recall is estimated without a dedicated ground-truth reference dataset.
+
+## Observability
+
+OpenTelemetry spans provide visibility into the internal operations of the RAG pipeline.
+
+Instrumented operations include:
+
+| Component | Recorded Information |
+|---|---|
+| Ingestion | Document and chunk counts |
+| Chunking | Token counts and average chunk size |
+| Embedding | Model and embedding operations |
+| Retrieval | Query rewriting, search and retrieved results |
+| Generation | Model, latency and token consumption |
+| Evaluation | Evaluation operations |
+
+### Local Trace Persistence
+
+Span records are written to:
+
+```text
+data/traces.jsonl
+```
+
+Trace records contain information such as:
+
+- Span name and identifiers.
+- Parent span information.
+- Operation duration.
+- Attributes.
+- Execution status.
+- Timestamp.
+
+The API exposes trace and evaluation records for inspection.
+
+### Optional OTLP Export
+
+To enable exporting traces to a compatible OpenTelemetry collector, configure:
+
+```dotenv
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```
+
+A compatible collector must be running separately.
+
+The current local exporter configuration uses an insecure connection and should not be used unchanged for remote production infrastructure.
+
+## Testing and Validation
+
+The repository includes three executable smoke test scripts covering the main stages of the RAG system.
+
+### Core Pipeline
+
+```bash
+python test_pipeline.py
+```
+
+Exercises document ingestion, embedding, vector retrieval and answer generation.
+
+### Telemetry
+
+```bash
+python test_telemetry.py
+```
+
+Exercises instrumented retrieval and generation and displays recorded span information.
+
+### Evaluation
+
+```bash
+python test_evals.py
+```
+
+Runs four sample questions through the pipeline and evaluates the resulting answers.
+
+### Validation Scope
+
+| Test Script | Responsibility |
+|---|---|
+| `test_pipeline.py` | End-to-end pipeline demonstration |
+| `test_telemetry.py` | Observability smoke testing |
+| `test_evals.py` | Evaluation smoke testing |
+
+These scripts require valid API credentials and may make billable external API requests.
+
+They are integration-oriented smoke tests rather than a comprehensive isolated unit test suite.
+
+Automated mocked tests, CI validation and reproducible performance benchmarks are planned improvements.
+
+## Engineering Decisions
+
+### Modular Pipeline Architecture
+
+Document loading, chunking, embedding, storage, retrieval and generation are separated into dedicated components.
+
+This design improves maintainability and makes individual components easier to replace or extend.
+
+### Persistent Vector Storage
+
+ChromaDB provides local vector persistence without requiring a separately managed database server for development.
+
+### Token-Aware Chunking
+
+The default configuration uses 400-token chunks with an 80-token overlap.
+
+This provides a starting point for balancing passage size with continuity across chunk boundaries.
+
+Optimal chunking parameters depend on the document corpus and should be evaluated empirically.
+
+### Query Rewriting
+
+An LLM reformulates questions before vector retrieval to help produce search-oriented queries.
+
+The effect on retrieval quality should be established through comparative evaluation.
+
+### Optional Reranking
+
+The retrieval component supports an optional cross-encoder stage to refine candidate ordering after vector search.
+
+Reranking is disabled by default.
+
+### Grounded Generation
+
+The generation prompt instructs the model to rely on retrieved passages, identify sources and abstain when context is insufficient.
+
+Prompt-based grounding reduces certain risks but does not guarantee factual correctness.
+
+### Evaluation as a Dedicated Component
+
+The evaluation engine is separated from generation, allowing response quality to be assessed independently of the primary answer-generation step.
+
+### Observability by Design
+
+Pipeline instrumentation is included alongside core application functionality rather than being treated as a separate deployment concern.
+
+This helps identify bottlenecks and inspect system behaviour during development.
+
+## Project Structure
+
+```text
+rag-system/
+├── core/
+│   ├── __init__.py
+│   ├── models.py
+│   ├── loader.py
+│   ├── chunker.py
+│   ├── embedder.py
+│   ├── vector_store.py
+│   ├── retriever.py
+│   ├── generator.py
+│   ├── ingestion_pipeline.py
+│   ├── telemetry.py
+│   └── evals.py
+│
+├── data/
+│   ├── chroma/
+│   ├── traces.jsonl
+│   └── evals.jsonl
+│
+├── .gitignore
+├── api.py
+├── requirements.txt
+├── test_pipeline.py
+├── test_telemetry.py
+├── test_evals.py
+└── README.md
+```
+
+The local data directory contains runtime-generated storage and diagnostic records.
+
+### Component Responsibilities
+
+| Component | Responsibility |
+|---|---|
+| `models.py` | Shared pipeline data structures |
+| `loader.py` | Document parsing and loading |
+| `chunker.py` | Token-aware text segmentation |
+| `embedder.py` | Text embedding generation |
+| `vector_store.py` | Vector persistence and search |
+| `retriever.py` | Query transformation and retrieval |
+| `generator.py` | Context construction and answer generation |
+| `ingestion_pipeline.py` | Document processing orchestration |
+| `telemetry.py` | Tracing and span persistence |
+| `evals.py` | LLM-based quality evaluation |
+| `api.py` | REST endpoints and application lifecycle |
+
+## Security and Deployment Considerations
+
+This project is currently intended for local development and engineering demonstration.
+
+Before exposing the API publicly:
+
+- Implement authentication and authorisation.
+- Restrict allowed CORS origins.
+- Introduce API rate limiting.
+- Enforce upload size limits and file validation.
+- Protect trace and evaluation endpoints.
+- Implement appropriate secret management.
+- Add data retention and deletion policies.
+- Prevent sensitive information from appearing in logs.
+- Implement prompt injection defences.
+- Use secure telemetry transport.
+- Sanitise internal exception details returned to clients.
+
+Document content and user queries may be transmitted to external AI providers as part of embedding, generation and evaluation operations.
+
+Retrieved documents should be treated as untrusted data rather than executable instructions.
+
+## Current Limitations
+
+- External API credentials are required for the full pipeline.
+- Model-based evaluations are not equivalent to ground-truth benchmarks.
+- Embedding and LLM requests introduce external service dependencies.
+- The current API does not include built-in authentication.
+- Several API operations use synchronous underlying processing.
+- Distributed worker execution has not been established.
+- A dedicated frontend dashboard is not included in the public repository.
+- Comprehensive automated unit testing and CI are not yet established.
+- Production-scale load and reliability testing have not been verified.
+
+## Development Roadmap
+
+### Implemented
+
+- [x] Document ingestion.
+- [x] Token-aware chunking.
+- [x] OpenAI embedding integration.
+- [x] ChromaDB vector storage.
+- [x] Semantic retrieval.
+- [x] Query rewriting.
+- [x] Optional reranking.
+- [x] Grounded Claude generation.
+- [x] OpenTelemetry instrumentation.
+- [x] Custom evaluation framework.
+- [x] FastAPI backend.
+- [x] Streaming responses.
+- [x] Health and observability endpoints.
+
+### Planned Improvements
+
+- [ ] Automated unit tests with mocked AI providers.
+- [ ] GitHub Actions continuous integration.
+- [ ] Reproducible dependency locking.
+- [ ] Docker-based deployment.
+- [ ] Authentication and authorisation.
+- [ ] Asynchronous pipeline processing.
+- [ ] Hybrid keyword and semantic search.
+- [ ] Ground-truth evaluation datasets.
+- [ ] Retrieval and latency benchmarks.
+- [ ] Prompt injection resistance testing.
+- [ ] React observability dashboard.
+- [ ] Cloud deployment and production monitoring.
+
+## Contributing
+
+Contributions, bug reports and technical suggestions are welcome.
+
+1. Fork the repository.
+2. Create a feature branch.
+3. Implement and validate your changes.
+4. Update relevant documentation.
+5. Submit a pull request.
+
+## Author
+
+**Bakang Mabilo**
+
+Software Developer | AI Engineering | Full-Stack Development
+
+BEngTech Electrical & Electronics Engineering — University of Johannesburg
+
+[![GitHub](https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/OfficialBakang)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/oratile-mabilo/)
 
 ---
 
-## Tech stack
-
-- **Python 3.11+**
-- **ChromaDB** — vector store
-- **OpenAI** — embeddings (text-embedding-3-small)
-- **Anthropic Claude** — generation + query rewriting
-- **tiktoken** — accurate token counting
-- **FastAPI** — API layer (Phase 4)
-- **OpenTelemetry** — distributed tracing (Phase 2)
-- **RAGAS** — retrieval evaluation (Phase 3)
+Exploring reliable AI systems through retrieval, grounded generation, observability and systematic evaluation.
