@@ -49,3 +49,20 @@ data/*.jsonl
 .DS_Store
 Thumbs.db
 
+# Local testing environments
+.venv-compat/
+.venv-clean/
+
+# Local dependency snapshots
+requirements-resolved.txt
+
+# Generated test coverage reports
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
+
+# Local tokenizer cache
+.tokenizer-cache/
+

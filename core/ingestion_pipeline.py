@@ -36,9 +36,17 @@ class IngestionPipeline:
     ):
         self.loader = DocumentLoader()
         self.chunker = Chunker(
-            chunk_size=chunk_size or int(os.getenv("CHUNK_SIZE", 400)),
-            chunk_overlap=chunk_overlap or int(os.getenv("CHUNK_OVERLAP", 80)),
-        )
+    chunk_size=(
+        chunk_size
+        if chunk_size is not None
+        else int(os.getenv("CHUNK_SIZE", "400"))
+    ),
+    chunk_overlap=(
+        chunk_overlap
+        if chunk_overlap is not None
+        else int(os.getenv("CHUNK_OVERLAP", "80"))
+    ),
+)
         self.embedder = Embedder()
         self.store = vector_store or VectorStore()
 

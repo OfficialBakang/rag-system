@@ -24,9 +24,11 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Annotated
 
+from chromadb.errors import NotFoundError
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,7 +70,7 @@ def get_retriever():
             get_pipeline().store,
             _embedder,
             rewrite_queries=True,
-            top_k=int(os.getenv("RETRIEVAL_TOP_K", 6)),
+            top_k=int(os.getenv("RETRIEVAL_TOP_K", "6")),
         )
     return _retriever
 
@@ -206,7 +208,7 @@ async def ingest_text(request: IngestTextRequest):
 
 
 @app.post("/ingest/file", response_model=IngestResponse, tags=["Ingestion"])
-async def ingest_file(file: UploadFile = File(...)):
+async def ingest_file(file: Annotated[UploadFile, File()]):
     """Upload and ingest a file (PDF, Markdown, TXT, HTML)."""
     import tempfile
     from pathlib import Path
@@ -249,7 +251,6 @@ async def ingest_file(file: UploadFile = File(...)):
 async def query(request: QueryRequest):
     """Run a full RAG query and return a grounded answer."""
     try:
-        t0 = time.perf_counter()
         chunks = get_retriever().retrieve(request.query, top_k=request.top_k)
         result = get_generator().generate(request.query, chunks)
 
@@ -312,7 +313,7 @@ async def query_stream(request: QueryRequest):
 @app.post("/evaluate", tags=["Evals"])
 async def evaluate(request: EvalRequest):
     """Evaluate a query-answer pair. Provide context_texts from a prior /query call."""
-    from core.models import GenerationResult, RetrievedChunk, Chunk
+    from core.models import Chunk, GenerationResult, RetrievedChunk
 
     # Build a minimal GenerationResult from the request
     fake_chunks = [
@@ -391,7 +392,8 @@ async def metrics():
 async def traces(limit: int = Query(default=50, ge=1, le=500)):
     """Return recent OTel span records from traces.jsonl."""
     from core.telemetry import load_traces
-    return {"traces": load_traces(limit=limit), "count": limit}
+    records = load_traces(limit=limit)
+    return {"traces": records, "count": len(records)}
 
 
 @app.get("/evals", tags=["Observability"])
@@ -417,10 +419,23 @@ async def delete_document(doc_id: str):
     """Remove all chunks belonging to a document by doc_id."""
     try:
         deleted = get_pipeline().store.delete_document(doc_id)
-        return {"status": "ok", "deleted_chunks": deleted, "doc_id": doc_id}
+    except NotFoundError as exc:
+        # An unmatched document returns zero. A missing collection is a store failure.
+        logger.exception(
+            "Document deletion failed because the collection is unavailable"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Document store unavailable",
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.exception("Document deletion failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Document deletion failed",
+        ) from exc
 
+    return {"status": "ok", "deleted_chunks": deleted, "doc_id": doc_id}
 
 # ---------------------------------------------------------------------------
 # Health check

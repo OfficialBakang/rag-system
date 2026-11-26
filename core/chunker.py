@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import replace
+from collections.abc import Iterator
 
 import tiktoken
 
@@ -63,8 +63,8 @@ class Chunker:
     """
 
     def __init__(self, chunk_size: int = 400, chunk_overlap: int = 80):
-        if chunk_overlap >= chunk_size:
-            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        if not 0 <= chunk_overlap < chunk_size:
+            raise ValueError("chunk_overlap must be non-negative and smaller than chunk_size")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
@@ -152,50 +152,55 @@ class Chunker:
         Each window starts with the overlap tail of the previous one.
         """
         windows: list[str] = []
-        current_tokens: list[str] = []   # raw words / tokens in current window
-        current_count = 0
-
-        # We work with raw words for simplicity; token count stays accurate
-        # because we re-count at the end.
-        overlap_buffer: str = ""
-
-        i = 0
-        while i < len(segments):
-            seg = segments[i]
-            seg_tokens = _count_tokens(seg)
-
-            # If adding this segment would exceed the limit, flush
-            if current_count + seg_tokens > self.chunk_size and current_tokens:
-                window_text = " ".join(current_tokens)
-                windows.append(window_text)
-
-                # Build overlap: take the tail of the flushed window
-                overlap_buffer = self._tail_tokens(window_text, self.chunk_overlap)
-                current_tokens = [overlap_buffer] if overlap_buffer else []
-                current_count = _count_tokens(overlap_buffer) if overlap_buffer else 0
-                # Don't advance i — re-process this segment
-                continue
-
-            current_tokens.append(seg)
-            current_count += seg_tokens
-            i += 1
-
-        # Flush the last window
-        if current_tokens:
-            windows.append(" ".join(current_tokens))
-
+        current = ""
+        for segment in segments:
+            for separator, piece in self._bounded_pieces(segment):
+                candidate = f"{current}{separator}{piece}" if current else piece
+                if current and _count_tokens(candidate) > self.chunk_size:
+                    windows.append(current)
+                    tail = self._tail_tokens(current, self.chunk_overlap)
+                    candidate = f"{tail}{separator}{piece}" if tail else piece
+                    # Retain only overlap that leaves room for new content.
+                    while tail and _count_tokens(candidate) > self.chunk_size:
+                        tail = tail.partition(" ")[2]
+                        candidate = f"{tail}{separator}{piece}" if tail else piece
+                current = candidate
+        if current:
+            windows.append(current)
         return windows
+
+    def _bounded_pieces(self, segment: str) -> Iterator[tuple[str, str]]:
+        if _count_tokens(segment) <= self.chunk_size:
+            yield " ", segment
+            return
+
+        # Pack whitespace-delimited words first. For long unbroken strings,
+        # split on character boundaries so Unicode text remains intact.
+        for word in segment.split():
+            if _count_tokens(word) <= self.chunk_size:
+                yield " ", word
+                continue
+            start = 0
+            while start < len(word):
+                end = min(start + self.chunk_size, len(word))
+                while (token_count := _count_tokens(word[start:end])) > self.chunk_size:
+                    if end == start + 1:
+                        raise ValueError(
+                            f"Character U+{ord(word[start]):04X} requires {token_count} tokens "
+                            f"but chunk_size={self.chunk_size}"
+                        )
+                    end = start + (end - start) // 2
+                yield " " if start == 0 else "", word[start:end]
+                start = end
 
     @staticmethod
     def _tail_tokens(text: str, n_tokens: int) -> str:
         """Return the last n_tokens worth of text from a string."""
         words = text.split()
         result_words: list[str] = []
-        count = 0
         for word in reversed(words):
-            word_tokens = _count_tokens(word)
-            if count + word_tokens > n_tokens:
+            candidate = " ".join([word, *reversed(result_words)])
+            if _count_tokens(candidate) > n_tokens:
                 break
             result_words.append(word)
-            count += word_tokens
         return " ".join(reversed(result_words))
