@@ -63,3 +63,6 @@ htmlcov/
 coverage.xml
 .pytest_cache/
 
+# Local tokenizer cache
+.tokenizer-cache/
+

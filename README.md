@@ -498,47 +498,132 @@ A compatible collector must be running separately.
 
 The current local exporter configuration uses an insecure connection and should not be used unchanged for remote production infrastructure.
 
-## Testing and Validation
 
-The repository includes three executable smoke test scripts covering the main stages of the RAG system.
+## Testing and Quality Assurance
 
-### Core Pipeline
+The project includes an isolated automated testing suite covering
+the core RAG pipeline, FastAPI endpoints, regression scenarios
+and application reliability.
 
-```bash
-python test_pipeline.py
-```
+### Verified Quality Metrics
 
-Exercises document ingestion, embedding, vector retrieval and answer generation.
-
-### Telemetry
-
-```bash
-python test_telemetry.py
-```
-
-Exercises instrumented retrieval and generation and displays recorded span information.
-
-### Evaluation
-
-```bash
-python test_evals.py
-```
-
-Runs four sample questions through the pipeline and evaluates the resulting answers.
-
-### Validation Scope
-
-| Test Script | Responsibility |
+| Metric | Result |
 |---|---|
-| `test_pipeline.py` | End-to-end pipeline demonstration |
-| `test_telemetry.py` | Observability smoke testing |
-| `test_evals.py` | Evaluation smoke testing |
+| Automated tests | 60/60 passing |
+| Statement coverage | 91.73% |
+| Statements exercised | 854 / 931 |
+| Minimum coverage threshold | 85% |
+| Chunker coverage | 100% |
+| Embedder coverage | 100% |
+| Generator coverage | 100% |
+| Python version | 3.12 |
+| Tested platforms | Windows and Linux |
+| Scoped Ruff linting | Passing |
+| External AI providers | Mocked |
+| API credentials required for automated tests | No |
 
-These scripts require valid API credentials and may make billable external API requests.
+### Automated Test Coverage
 
-They are integration-oriented smoke tests rather than a comprehensive isolated unit test suite.
+- Document loading and metadata extraction.
+- Token-aware chunking and Unicode boundary handling.
+- Embedding batching and retry behaviour.
+- Vector similarity search and metadata filtering.
+- Query rewriting and optional reranking.
+- LLM generation and streaming responses.
+- Evaluation scoring and persistence.
+- OpenTelemetry instrumentation.
+- FastAPI request validation and error handling.
+- Idempotent document deletion.
+- Secure storage failure responses.
+- External network isolation.
 
-Automated mocked tests, CI validation and reproducible performance benchmarks are planned improvements.
+### Run Automated Tests
+
+Install the development dependencies:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Prepare the tokenizer cache before running the isolated tests:
+
+```bash
+python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+```
+
+Execute the automated test suite:
+
+```bash
+python -m pytest tests/ -v
+```
+
+### Measure Code Coverage
+
+```bash
+python -m pytest tests/ --cov=core --cov=api --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=85
+```
+
+Coverage reports are generated at:
+
+- `htmlcov/index.html` — interactive HTML report.
+- `coverage.xml` — machine-readable coverage report.
+
+### Code Quality
+
+```bash
+python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py api.py
+python -m pip check
+```
+
+### Test Isolation
+
+External AI provider responses are mocked. Vector searches run
+against temporary local ChromaDB collections using synthetic
+vectors.
+
+Trace and evaluation records use temporary files. Test setup
+disables external telemetry export, dotenv loading and model
+downloads while blocking external Python socket operations.
+
+FastAPI requests execute in process without requiring a
+deployed application server.
+
+Optional cross-encoder reranking is tested using a controlled
+fake model rather than downloading model weights.
+
+### Continuous Integration
+
+The GitHub Actions workflow is configured to execute automated
+quality checks on Windows and Ubuntu using Python 3.12.
+
+The configured quality gates include:
+
+- Dependency installation and consistency validation.
+- Scoped Ruff linting.
+- Automated regression testing.
+- Minimum 85% statement coverage.
+- Downloadable HTML and XML coverage reports.
+
+Remote CI verification is pending.
+
+### Live Integration Smoke Tests
+
+The following scripts exercise the real AI integrations and
+require valid OpenAI and Anthropic credentials.
+
+| Command | Purpose |
+|---|---|
+| `python test_pipeline.py` | End-to-end ingestion, retrieval and generation |
+| `python test_telemetry.py` | Instrumented retrieval and generation |
+| `python test_evals.py` | Live generation and LLM-as-judge evaluation |
+
+Live integration tests may incur API charges and write to the
+configured vector database and diagnostic log paths.
+
+Statement coverage measures exercised application code.
+It does not measure RAG answer accuracy, retrieval quality
+or branch coverage.
+
 
 ## Engineering Decisions
 
@@ -668,7 +753,7 @@ Retrieved documents should be treated as untrusted data rather than executable i
 - Several API operations use synchronous underlying processing.
 - Distributed worker execution has not been established.
 - A dedicated frontend dashboard is not included in the public repository.
-- Comprehensive automated unit testing and CI are not yet established.
+- Continuous integration setup is pending.
 - Production-scale load and reliability testing have not been verified.
 
 ## Development Roadmap
@@ -688,10 +773,10 @@ Retrieved documents should be treated as untrusted data rather than executable i
 - [x] FastAPI backend.
 - [x] Streaming responses.
 - [x] Health and observability endpoints.
+- [x] Credential-free automated tests with mocked AI providers.
 
 ### Planned Improvements
 
-- [ ] Automated unit tests with mocked AI providers.
 - [ ] GitHub Actions continuous integration.
 - [ ] Reproducible dependency locking.
 - [ ] Docker-based deployment.
