@@ -31,12 +31,9 @@ from core.models import Chunk, Document
 
 logger = logging.getLogger(__name__)
 
-# Tokeniser for counting — cl100k_base covers GPT-4 and Claude tokenisation
-_ENC = tiktoken.get_encoding("cl100k_base")
-
-
 def _count_tokens(text: str) -> int:
-    return len(_ENC.encode(text, disallowed_special=()))
+    encoding = tiktoken.get_encoding("cl100k_base")
+    return len(encoding.encode(text, disallowed_special=()))
 
 
 def _split_sentences(text: str) -> list[str]:

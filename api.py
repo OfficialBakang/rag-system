@@ -29,13 +29,14 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from chromadb.errors import NotFoundError
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-load_dotenv()
+from rag_config import load_settings, smoke_test_mode
+
+load_settings()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -97,16 +98,33 @@ def get_evaluator():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    logger.info("Starting RAG API — warming up pipeline components...")
+    app.state.smoke = smoke_test_mode()
+    if app.state.smoke:
+        from core.vector_store import VectorStore
+        logger.info("Smoke-test mode enabled. Initialising local ChromaDB only.")
+        app.state.store = VectorStore()
+        try:
+            app.state.store.count()
+            yield
+        finally:
+            app.state.store.close()
+        return
+
     get_pipeline()
     get_retriever()
     get_generator()
-    logger.info(
-        "Pipeline ready — %d chunks in collection",
-        get_pipeline().store.count(),
-    )
+    logger.info("Pipeline ready — %d chunks in collection", get_pipeline().store.count())
     yield
     logger.info("Shutting down RAG API.")
+
+
+def get_store():
+    return app.state.store if app.state.smoke else get_pipeline().store
+
+
+def require_ai():
+    if app.state.smoke:
+        raise HTTPException(503, "AI operations unavailable in smoke-test mode")
 
 
 app = FastAPI(
@@ -189,7 +207,7 @@ class MetricsResponse(BaseModel):
 # Ingestion endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/ingest/text", response_model=IngestResponse, tags=["Ingestion"])
+@app.post("/ingest/text", response_model=IngestResponse, dependencies=[Depends(require_ai)], tags=["Ingestion"])
 async def ingest_text(request: IngestTextRequest):
     """Ingest a plain-text string into the vector store."""
     try:
@@ -207,7 +225,7 @@ async def ingest_text(request: IngestTextRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/ingest/file", response_model=IngestResponse, tags=["Ingestion"])
+@app.post("/ingest/file", response_model=IngestResponse, dependencies=[Depends(require_ai)], tags=["Ingestion"])
 async def ingest_file(file: Annotated[UploadFile, File()]):
     """Upload and ingest a file (PDF, Markdown, TXT, HTML)."""
     import tempfile
@@ -247,7 +265,7 @@ async def ingest_file(file: Annotated[UploadFile, File()]):
 # Query endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/query", response_model=QueryResponse, tags=["Query"])
+@app.post("/query", response_model=QueryResponse, dependencies=[Depends(require_ai)], tags=["Query"])
 async def query(request: QueryRequest):
     """Run a full RAG query and return a grounded answer."""
     try:
@@ -286,7 +304,7 @@ async def query(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/query/stream", tags=["Query"])
+@app.post("/query/stream", dependencies=[Depends(require_ai)], tags=["Query"])
 async def query_stream(request: QueryRequest):
     """
     Streaming RAG query — returns answer tokens as Server-Sent Events.
@@ -310,7 +328,7 @@ async def query_stream(request: QueryRequest):
 # Eval endpoint
 # ---------------------------------------------------------------------------
 
-@app.post("/evaluate", tags=["Evals"])
+@app.post("/evaluate", dependencies=[Depends(require_ai)], tags=["Evals"])
 async def evaluate(request: EvalRequest):
     """Evaluate a query-answer pair. Provide context_texts from a prior /query call."""
     from core.models import Chunk, GenerationResult, RetrievedChunk
@@ -379,8 +397,8 @@ async def metrics():
 
     return MetricsResponse(
         status="ok",
-        collection_size=get_pipeline().store.count(),
-        sources=get_pipeline().store.list_sources(),
+        collection_size=get_store().count(),
+        sources=get_store().list_sources(),
         total_traces=len(traces),
         total_evals=len(evals),
         avg_latency_ms=avg_latency,
@@ -407,7 +425,7 @@ async def evals(limit: int = Query(default=50, ge=1, le=500)):
 @app.get("/sources", tags=["Observability"])
 async def sources():
     """List all source documents currently in the vector store."""
-    return {"sources": get_pipeline().store.list_sources()}
+    return {"sources": get_store().list_sources()}
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +436,7 @@ async def sources():
 async def delete_document(doc_id: str):
     """Remove all chunks belonging to a document by doc_id."""
     try:
-        deleted = get_pipeline().store.delete_document(doc_id)
+        deleted = get_store().delete_document(doc_id)
     except NotFoundError as exc:
         # An unmatched document returns zero. A missing collection is a store failure.
         logger.exception(
@@ -443,8 +461,38 @@ async def delete_document(doc_id: str):
 
 @app.get("/health", tags=["Health"])
 async def health():
+    try:
+        count = get_store().count()
+    except Exception as exc:
+        logger.exception("Health check failed")
+        raise HTTPException(503, "Document store unavailable") from exc
     return {
         "status": "ok",
-        "collection_size": get_pipeline().store.count(),
+        "collection_size": count,
         "timestamp": time.time(),
     }
+@app.get("/live", tags=["Health"])
+async def live():
+    return {"status": "ok"}
+
+
+@app.get("/ready", tags=["Health"])
+async def ready():
+    try:
+        get_store().count()
+        database = True
+    except Exception:
+        logger.exception("Readiness database probe failed")
+        database = False
+    smoke = app.state.smoke
+    configured = all(os.getenv(key, "").strip() for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"))
+    rag_ready = database and configured and not smoke
+    return JSONResponse(
+        status_code=200 if database and (smoke or configured) else 503,
+        content={
+            "mode": "smoke" if smoke else "normal",
+            "database_available": database,
+            "providers_configured": configured,
+            "rag_ready": rag_ready,
+        },
+    )

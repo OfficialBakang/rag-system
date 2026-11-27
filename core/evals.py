@@ -43,12 +43,12 @@ import time
 from pathlib import Path
 
 import anthropic
-from dotenv import load_dotenv
 
 from core.models import EvalResult, GenerationResult
 from core.telemetry import record_span
+from rag_config import load_settings
 
-load_dotenv()
+load_settings()
 logger = logging.getLogger(__name__)
 
 _EVAL_LOG = Path(os.getenv("EVAL_LOG_PATH", "./data/evals.jsonl"))
@@ -302,8 +302,8 @@ class EvalRunner:
                 score = max(0.0, min(1.0, score))   # clamp to [0, 1]
                 logger.debug("%s score=%.3f — %s", metric, score, parsed.get("reasoning", ""))
                 return score
-            except Exception as exc:
-                logger.warning("Eval metric %r failed: %s — defaulting to 0.0", metric, exc)
+            except Exception:
+                logger.exception("Eval metric %r failed — defaulting to 0.0", metric)
                 return 0.0
 
     @staticmethod

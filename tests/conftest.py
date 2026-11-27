@@ -15,6 +15,9 @@ def pytest_configure(config):
     patch = pytest.MonkeyPatch()
     config.add_cleanup(patch.undo)
     patch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    # Chroma settings can also use python-dotenv through pydantic-settings.
+    patch.setattr(dotenv.main.DotEnv, "dict", lambda self: {})
+    patch.delenv("RAG_SMOKE_TEST_MODE", raising=False)
     for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         patch.delenv(key, raising=False)
     for key, value in {

@@ -262,7 +262,7 @@ See [.env.example](.env.example) for the available configuration.
 Never commit your actual `.env` file.
 
 
-### 5. Run the Pipeline Smoke Test
+### 5. Run the Live Pipeline Smoke Test (requires provider credentials)
 
 ```bash
 python test_pipeline.py
@@ -285,6 +285,73 @@ http://127.0.0.1:8000
 - Swagger UI: http://127.0.0.1:8000/docs
 - ReDoc: http://127.0.0.1:8000/redoc
 - OpenAPI schema: http://127.0.0.1:8000/openapi.json
+
+## Docker deployment
+
+Install Docker Desktop in Linux-container mode on Windows, or Docker Engine on Linux,
+with Compose v2.24 or later. The first build needs internet access for the Python
+base image, runtime packages and tokenizer cache. The host-side smoke script uses
+only Python 3.12 and the Docker CLI.
+
+The builder installs runtime dependencies into a virtual environment. The final
+Python 3.12 slim image copies that environment and the API source, caches the
+`cl100k_base` tokenizer and runs one Uvicorn worker as UID 10001. The build
+context allows only runtime source and build inputs. Development tools and the
+optional cross-encoder dependencies stay outside the image.
+
+### Run the full RAG service
+
+From the repository root, create a local configuration file if needed (Windows CMD).
+
+```cmd
+if not exist .env copy .env.example .env
+```
+
+Set `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` in that file and keep
+`RAG_SMOKE_TEST_MODE=false`. Compose supplies the values when the container starts.
+
+```cmd
+docker compose up --build -d
+curl.exe http://127.0.0.1:8000/ready
+```
+
+Compose binds port 8000 to loopback and mounts the named volume `rag-data` at
+`/app/data`. Chroma persists in `/app/data/chroma`, alongside the trace and
+evaluation logs in the parent directory. Use `docker compose down` to shut down
+and `docker compose up -d` from the same project to recreate the service with
+its data. **`docker compose down -v` removes the persistent volume and its data.**
+
+### Run the credential-free Docker smoke test
+
+```cmd
+docker build --target runtime -t rag-system:smoke .
+python scripts/docker_smoke.py --image rag-system:smoke
+```
+
+The runner starts the image with empty provider credentials, no published ports
+and `--network none`. It probes HTTP over container loopback, checks UID 10001,
+runtime dependencies, cached tokenization, writable storage and absence of
+`/app/.env`. A separate short-lived writer inserts and queries a synthetic vector
+after the API stops. A fresh API container must see the persisted record in the
+same disposable volume. The runner cleans up its containers and volume.
+
+Smoke mode starts the real local store. Ingestion, queries (including streaming
+and rewriting) and evaluation return HTTP 503. External trace export is disabled.
+Provider authentication, model access and answer quality require live integration tests.
+
+| Endpoint | Successful probe | Failure |
+|---|---|---|
+| `/live` | HTTP 200 while the API is serving | A stopped process cannot respond |
+| `/health` | HTTP 200 with the existing status, collection size and timestamp | HTTP 503 if the collection count fails |
+| `/ready` | HTTP 200 when the local store works in smoke mode, or the store works and both provider keys are configured after normal startup | HTTP 503 when a required local check fails |
+| `/openapi.json` | FastAPI schema in either mode | A startup failure prevents serving the schema |
+
+Readiness reports `mode`, `database_available`, `providers_configured` and
+`rag_ready`. Smoke mode always reports `rag_ready: false`. In normal mode,
+`rag_ready` reflects local startup and configuration checks only. Health probes
+make no provider requests. Credential validity and provider reachability remain
+unverified. A database initialisation error fails startup. A later database
+failure leaves liveness available for diagnosis.
 
 ## API Reference
 
@@ -509,15 +576,15 @@ and application reliability.
 
 | Metric | Result |
 |---|---|
-| Automated tests | 60/60 passing |
-| Statement coverage | 91.73% |
-| Statements exercised | 854 / 931 |
+| Automated tests | 71/71 passing (60 original, 11 smoke regressions) |
+| Statement coverage | 92.18% |
+| Statements exercised | 896 / 972 |
 | Minimum coverage threshold | 85% |
 | Chunker coverage | 100% |
 | Embedder coverage | 100% |
 | Generator coverage | 100% |
 | Python version | 3.12 |
-| Tested platforms | Windows and Linux |
+| Platform verified for this revision | Windows, Python 3.12.10 |
 | Scoped Ruff linting | Passing |
 | External AI providers | Mocked |
 | API credentials required for automated tests | No |
@@ -571,7 +638,7 @@ Coverage reports are generated at:
 ### Code Quality
 
 ```bash
-python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py api.py
+python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py core/telemetry.py core/evals.py core/vector_store.py api.py rag_config.py scripts/docker_smoke.py
 python -m pip check
 ```
 
@@ -604,7 +671,10 @@ The configured quality gates include:
 - Minimum 85% statement coverage.
 - Downloadable HTML and XML coverage reports.
 
-Remote CI verification is pending.
+A separate Ubuntu job validates Compose, builds the runtime target, reports image
+size and runs the isolated Docker smoke script under a 25-minute timeout. It uses
+read-only repository permissions and requires no repository secrets. Remote Docker
+CI verification is pending.
 
 ### Live Integration Smoke Tests
 
@@ -753,7 +823,6 @@ Retrieved documents should be treated as untrusted data rather than executable i
 - Several API operations use synchronous underlying processing.
 - Distributed worker execution has not been established.
 - A dedicated frontend dashboard is not included in the public repository.
-- Continuous integration setup is pending.
 - Production-scale load and reliability testing have not been verified.
 
 ## Development Roadmap
@@ -777,9 +846,7 @@ Retrieved documents should be treated as untrusted data rather than executable i
 
 ### Planned Improvements
 
-- [ ] GitHub Actions continuous integration.
 - [ ] Reproducible dependency locking.
-- [ ] Docker-based deployment.
 - [ ] Authentication and authorisation.
 - [ ] Asynchronous pipeline processing.
 - [ ] Hybrid keyword and semantic search.
