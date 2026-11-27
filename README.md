@@ -8,6 +8,9 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector%20Database-orange)
 ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-RAG-7C3AED)
+![Tests](https://img.shields.io/badge/Tests-71%20Passing-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-92.26%25-brightgreen)
+![Docker](https://img.shields.io/badge/Docker-Smoke%20Tests%20Passing-2496ED?logo=docker&logoColor=white)
 
 An end-to-end Retrieval-Augmented Generation (RAG) system combining semantic search, document ingestion, grounded LLM generation, OpenTelemetry instrumentation and automated answer evaluation through a FastAPI backend.
 
@@ -509,18 +512,19 @@ and application reliability.
 
 | Metric | Result |
 |---|---|
-| Automated tests | 60/60 passing |
-| Statement coverage | 91.73% |
-| Statements exercised | 854 / 931 |
+| Automated tests | 71/71 passing |
+| Statement coverage | 92.26% |
+| Statements exercised | 906 / 982 |
 | Minimum coverage threshold | 85% |
-| Chunker coverage | 100% |
-| Embedder coverage | 100% |
-| Generator coverage | 100% |
-| Python version | 3.12 |
-| Tested platforms | Windows and Linux |
 | Scoped Ruff linting | Passing |
-| External AI providers | Mocked |
-| API credentials required for automated tests | No |
+| Python version | 3.12 |
+| Docker runtime build | Passing locally |
+| Credential-free Docker smoke tests | Passing locally |
+| Persistent vector storage | Verified after container recreation |
+| External network isolation | Enabled during Docker smoke testing |
+| Real API credentials required for smoke tests | No |
+| Remote GitHub Actions verification | Pending |
+
 
 ### Automated Test Coverage
 
