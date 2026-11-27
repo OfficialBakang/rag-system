@@ -58,6 +58,7 @@ jobs:
       - name: Prepare tokenizer cache
         run: python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); print('Tokenizer ready')"
 
+      
       - name: Run automated tests and enforce coverage
         run: >
           python -m pytest tests/
@@ -65,11 +66,12 @@ jobs:
           --tb=short
           --cov=core
           --cov=api
-	  --cov=rag_config
+          --cov=rag_config
           --cov-report=term-missing
           --cov-report=xml
           --cov-report=html
           --cov-fail-under=85
+
 
       - name: Upload coverage reports
         if: always()
@@ -82,21 +84,25 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  
   docker:
     name: Docker build and smoke tests
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Validate Compose configuration
-  	run: docker compose --env-file .env.example config --no-env-resolution --quiet
+        run: docker compose --env-file .env.example config --no-env-resolution --quiet
 
       - name: Build runtime image
         run: docker build --target runtime -t rag-system:smoke .
@@ -106,3 +112,4 @@ jobs:
 
       - name: Exercise isolated runtime
         run: python scripts/docker_smoke.py --image rag-system:smoke
+
