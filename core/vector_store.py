@@ -30,6 +30,7 @@ import chromadb
 from chromadb.config import Settings
 
 from core.models import Chunk, EmbeddedChunk, RetrievedChunk
+from rag_config import smoke_test_mode
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,13 @@ class VectorStore:
         collection: str = _DEFAULT_COLLECTION,
     ):
         Path(persist_dir).mkdir(parents=True, exist_ok=True)
+        settings = Settings(anonymized_telemetry=False)
+        if smoke_test_mode():
+            settings.chroma_otel_collection_endpoint = ""
+            settings.chroma_otel_granularity = "none"
         self._client = chromadb.PersistentClient(
             path=persist_dir,
-            settings=Settings(anonymized_telemetry=False),
+            settings=settings,
         )
         self._col = self._client.get_or_create_collection(
             name=collection,
@@ -153,6 +158,9 @@ class VectorStore:
             self._col.delete(ids=ids_to_delete)
         logger.info("Deleted %d chunks for doc_id=%r", len(ids_to_delete), doc_id)
         return len(ids_to_delete)
+
+    def close(self) -> None:
+        self._client.close()
 
     def count(self) -> int:
         """Total number of chunks in the collection."""

@@ -30,13 +30,13 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from dotenv import load_dotenv
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -47,7 +47,9 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.trace import Status, StatusCode
 
-load_dotenv()
+from rag_config import load_settings, smoke_test_mode
+
+load_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,8 @@ def _build_provider() -> TracerProvider:
     )
 
     # Export to OTLP collector if configured
-    if os.getenv("OTEL_ENABLED", "true").lower() == "true":
+    if (not smoke_test_mode()
+            and os.getenv("OTEL_ENABLED", "true").lower() == "true"):
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
@@ -88,8 +91,8 @@ def _build_provider() -> TracerProvider:
             )
             provider.add_span_processor(BatchSpanProcessor(otlp))
             logger.info("OTLP exporter configured → %s", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
-        except Exception as exc:
-            logger.warning("OTLP exporter unavailable (%s) — console only", exc)
+        except Exception:
+            logger.exception("OTLP exporter unavailable — console only")
 
     trace.set_tracer_provider(provider)
     return provider
@@ -124,7 +127,7 @@ def _log_span(
         "duration_ms": round((end_time - start_time) * 1000, 2),
         "attributes": attributes,
         "status": status,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
     with open(_TRACE_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
@@ -149,7 +152,6 @@ def record_span(
             span["result.count"] = len(results)   # add attrs mid-span
     """
     attrs = dict(attributes or {})
-    span_data: dict[str, Any] = {}      # mutable so inner code can add attrs
     start = time.perf_counter()
     start_wall = time.time()
     status = "OK"

@@ -1,0 +1,41 @@
+
+services:
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+
+    image: rag-system:local
+
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      CHROMA_PERSIST_DIR: /app/data/chroma
+      TRACE_LOG_PATH: /app/data/traces.jsonl
+      EVAL_LOG_PATH: /app/data/evals.jsonl
+      TIKTOKEN_CACHE_DIR: /opt/tokenizer-cache
+      OTEL_ENABLED: "false"
+
+    volumes:
+      - rag-data:/app/data
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    init: true
+
+    restart: unless-stopped
+
+    stop_grace_period: 30s
+
+volumes:
+  rag-data:

@@ -14,16 +14,15 @@ import logging
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from core.chunker import Chunker
 from core.embedder import Embedder
 from core.loader import DocumentLoader
 from core.models import Document
 from core.telemetry import record_span
 from core.vector_store import VectorStore
+from rag_config import load_settings
 
-load_dotenv()
+load_settings()
 logger = logging.getLogger(__name__)
 
 

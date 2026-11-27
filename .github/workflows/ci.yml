@@ -53,11 +53,12 @@ jobs:
         run: python -m pip check
 
       - name: Run Ruff linting
-        run: python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py api.py
+        run: python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py core/telemetry.py core/evals.py core/vector_store.py api.py rag_config.py scripts/docker_smoke.py
 
       - name: Prepare tokenizer cache
         run: python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); print('Tokenizer ready')"
 
+      
       - name: Run automated tests and enforce coverage
         run: >
           python -m pytest tests/
@@ -65,10 +66,12 @@ jobs:
           --tb=short
           --cov=core
           --cov=api
+          --cov=rag_config
           --cov-report=term-missing
           --cov-report=xml
           --cov-report=html
           --cov-fail-under=85
+
 
       - name: Upload coverage reports
         if: always()
@@ -80,3 +83,33 @@ jobs:
             htmlcov/
           if-no-files-found: ignore
           retention-days: 14
+
+  
+  docker:
+    name: Docker build and smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config --no-env-resolution --quiet
+
+      - name: Build runtime image
+        run: docker build --target runtime -t rag-system:smoke .
+
+      - name: Report image size in bytes
+        run: docker image inspect --format '{{.Size}}' rag-system:smoke
+
+      - name: Exercise isolated runtime
+        run: python scripts/docker_smoke.py --image rag-system:smoke
+
