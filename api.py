@@ -23,20 +23,48 @@ from __future__ import annotations
 
 import logging
 import os
-import time
+import re
+import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
+import anthropic
+import openai
 from chromadb.errors import NotFoundError
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from rag_config import load_settings, smoke_test_mode
+from api_security import Access, Boundary, Role, ai_slot, authorize, origins
+from rag_config import ResourceLimit, flag, load_settings, smoke_test_mode
 
 load_settings()
+# SDK and HTTP transport debug logs can include request content, headers or URLs.
+for component in (
+    "openai",
+    "anthropic",
+    "httpx",
+    "httpcore",
+    "pypdf",
+    "python_multipart",
+    "multipart",
+):
+    logging.getLogger(component).addHandler(logging.NullHandler())
+    logging.getLogger(component).propagate = False
+logging.getLogger("uvicorn.access").disabled = True
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
@@ -46,8 +74,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Lazy-loaded pipeline components (initialised once on startup)
 # ---------------------------------------------------------------------------
-_pipeline  = None
-_embedder  = None
+_pipeline = None
+_embedder = None
 _retriever = None
 _generator = None
 _evaluator = None
@@ -57,6 +85,7 @@ def get_pipeline():
     global _pipeline
     if _pipeline is None:
         from core.ingestion_pipeline import IngestionPipeline
+
         _pipeline = IngestionPipeline()
     return _pipeline
 
@@ -66,7 +95,8 @@ def get_retriever():
     if _retriever is None:
         from core.embedder import Embedder
         from core.retriever import Retriever
-        _embedder  = Embedder()
+
+        _embedder = Embedder()
         _retriever = Retriever(
             get_pipeline().store,
             _embedder,
@@ -80,6 +110,7 @@ def get_generator():
     global _generator
     if _generator is None:
         from core.generator import Generator
+
         _generator = Generator()
     return _generator
 
@@ -88,6 +119,7 @@ def get_evaluator():
     global _evaluator
     if _evaluator is None:
         from core.evals import EvalRunner
+
         _evaluator = EvalRunner()
     return _evaluator
 
@@ -96,11 +128,16 @@ def get_evaluator():
 # App lifecycle
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.access = Access()
+    if not 1 <= int(os.getenv("MAX_TOKENS", "1024")) <= 8192:
+        raise ValueError("MAX_TOKENS must be between 1 and 8192")
     app.state.smoke = smoke_test_mode()
     if app.state.smoke:
         from core.vector_store import VectorStore
+
         logger.info("Smoke-test mode enabled. Initialising local ChromaDB only.")
         app.state.store = VectorStore()
         try:
@@ -113,7 +150,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     get_pipeline()
     get_retriever()
     get_generator()
-    logger.info("Pipeline ready — %d chunks in collection", get_pipeline().store.count())
+    logger.info(
+        "Pipeline ready — %d chunks in collection", get_pipeline().store.count()
+    )
     yield
     logger.info("Shutting down RAG API.")
 
@@ -122,33 +161,81 @@ def get_store():
     return app.state.store if app.state.smoke else get_pipeline().store
 
 
-def require_ai():
-    if app.state.smoke:
-        raise HTTPException(503, "AI operations unavailable in smoke-test mode")
-
-
+docs_enabled = flag("RAG_PUBLIC_DOCS", True)
 app = FastAPI(
     title="RAG System API",
     description="Production RAG pipeline with telemetry and evals",
     version="1.0.0",
     lifespan=lifespan,
+    telemetry={"tracing": False, "metrics": False, "logs": False, "auto_configure": False},
+    openapi_url="/openapi.json" if docs_enabled else None,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten in production
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins(),
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
+
+
+app.add_middleware(Boundary)
+protected = APIRouter(dependencies=[Depends(authorize)])
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_input(request, exc):
+    # Never echo Pydantic input values, context or attacker-controlled field names.
+    fields = {
+        "body",
+        "query",
+        "text",
+        "top_k",
+        "file",
+        "limit",
+        "evaluate",
+        "answer",
+        "source",
+        "context_texts",
+    }
+    errors = [
+        {"loc": [part for part in e["loc"] if part in fields], "msg": "Invalid value"}
+        for e in exc.errors()[:10]
+    ]
+    return JSONResponse({"detail": errors}, 422)
+
+
+@app.exception_handler(ResourceLimit)
+async def over_limit(request, exc):
+    return JSONResponse({"detail": "Document exceeds processing limits"}, 413)
+
+
+async def provider_error(request, exc):
+    status = 503 if getattr(exc, "status_code", None) in (401, 403, 429) else 502
+    return JSONResponse({"detail": "AI provider unavailable"}, status)
+
+
+for provider_exception in (openai.APIError, anthropic.APIError):
+    app.add_exception_handler(provider_exception, provider_error)
+
+
+class InputModel(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
 
 
 # ---------------------------------------------------------------------------
 # Request / Response models
 # ---------------------------------------------------------------------------
 
-class IngestTextRequest(BaseModel):
+
+class IngestTextRequest(InputModel):
     text: str = Field(..., min_length=10, description="Raw text to ingest")
-    source: str = Field("api-upload", description="Source label for this document")
+    source: str = Field(
+        "api-upload",
+        min_length=1,
+        max_length=256,
+        description="Source label for this document",
+    )
 
 
 class IngestResponse(BaseModel):
@@ -160,9 +247,9 @@ class IngestResponse(BaseModel):
     elapsed_ms: float
 
 
-class QueryRequest(BaseModel):
+class QueryRequest(InputModel):
     query: str = Field(..., min_length=3, description="Question to answer")
-    top_k: int = Field(default=6, ge=1, le=20)
+    top_k: int = Field(default=6, ge=1)
     evaluate: bool = Field(default=False, description="Run evals on this query")
 
 
@@ -186,11 +273,11 @@ class QueryResponse(BaseModel):
     eval: dict | None = None
 
 
-class EvalRequest(BaseModel):
-    query: str
-    answer: str
-    context_texts: list[str]
-    trace_id: str = "manual"
+class EvalRequest(InputModel):
+    query: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+    context_texts: list[str] = Field(max_length=100)
+    trace_id: str = Field(default="manual", pattern=r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class MetricsResponse(BaseModel):
@@ -207,131 +294,185 @@ class MetricsResponse(BaseModel):
 # Ingestion endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/ingest/text", response_model=IngestResponse, dependencies=[Depends(require_ai)], tags=["Ingestion"])
-async def ingest_text(request: IngestTextRequest):
+
+@protected.post(
+    "/ingest/text",
+    response_model=IngestResponse,
+    dependencies=[Depends(ai_slot, scope="request")],
+    tags=["Ingestion"],
+)
+def ingest_text(request: IngestTextRequest):
     """Ingest a plain-text string into the vector store."""
-    try:
-        summary = get_pipeline().ingest_text(request.text, source=request.source)
-        return IngestResponse(
-            status="ok",
-            documents=summary["documents"],
-            chunks=summary["chunks"],
-            tokens=summary["tokens"],
-            collection_total=summary["collection_total"],
-            elapsed_ms=summary.get("elapsed_ms", 0),
-        )
-    except Exception as exc:
-        logger.exception("Ingest text failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+    if len(request.text) > app.state.access.limits.text_chars:
+        raise HTTPException(413, "Text too large")
+    summary = get_pipeline().ingest_text(request.text, source=request.source)
+    return IngestResponse(
+        status="ok",
+        documents=summary["documents"],
+        chunks=summary["chunks"],
+        tokens=summary["tokens"],
+        collection_total=summary["collection_total"],
+        elapsed_ms=summary.get("elapsed_ms", 0),
+    )
 
 
-@app.post("/ingest/file", response_model=IngestResponse, dependencies=[Depends(require_ai)], tags=["Ingestion"])
-async def ingest_file(file: Annotated[UploadFile, File()]):
-    """Upload and ingest a file (PDF, Markdown, TXT, HTML)."""
-    import tempfile
-    from pathlib import Path
+@protected.post(
+    "/ingest/file",
+    response_model=IngestResponse,
+    dependencies=[Depends(ai_slot, scope="request")],
+    tags=["Ingestion"],
+)
+def ingest_file(file: Annotated[UploadFile, File()]):
+    """Validate bytes before ingestion. Only server-generated paths reach the loader."""
+    name = file.filename or ""
+    if (
+        not name
+        or len(name) > 255
+        or re.search(r"[\\/:\x00-\x1f]", name)
+        or name in {".", ".."}
+    ):
+        raise HTTPException(422, "Invalid upload filename")
+    suffix = Path(name).suffix.lower()
+    if suffix not in {".pdf", ".txt", ".md", ".html", ".htm"}:
+        raise HTTPException(415, "Unsupported document format")
+    limits = app.state.access.limits
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / ("document" + suffix)
+        size = 0
+        with path.open("wb") as output:
+            while block := file.file.read(65536):
+                size += len(block)
+                if size > limits.upload_bytes:
+                    raise HTTPException(413, "Upload too large")
+                output.write(block)
+        if not size:
+            raise HTTPException(422, "Empty document")
+        from core.loader import DocumentLoader
 
-    suffix = Path(file.filename or "upload.txt").suffix.lower()
-    allowed = {".pdf", ".txt", ".md", ".html", ".htm"}
-    if suffix not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{suffix}'. Allowed: {sorted(allowed)}",
-        )
-
-    try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        summary = get_pipeline().ingest_file(tmp_path)
-        Path(tmp_path).unlink(missing_ok=True)
-
-        return IngestResponse(
-            status="ok",
-            documents=summary["documents"],
-            chunks=summary["chunks"],
-            tokens=summary["tokens"],
-            collection_total=summary["collection_total"],
-            elapsed_ms=summary.get("elapsed_ms", 0),
-        )
-    except Exception as exc:
-        logger.exception("Ingest file failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        try:
+            doc = DocumentLoader().load_file(path)
+        except ResourceLimit:
+            raise
+        except Exception:  # noqa: BLE001 - sanitise untrusted parser and backend failures
+            raise HTTPException(422, "Invalid or unreadable document") from None
+        if not doc.content.strip():
+            raise HTTPException(422, "Document contains no text")
+        doc.source = name
+        doc.metadata.update(source=name, filename=name)
+        summary = get_pipeline().ingest_documents([doc])
+    return IngestResponse(
+        status="ok",
+        elapsed_ms=summary.get("elapsed_ms", 0),
+        **{
+            k: summary[k] for k in ("documents", "chunks", "tokens", "collection_total")
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
 # Query endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/query", response_model=QueryResponse, dependencies=[Depends(require_ai)], tags=["Query"])
-async def query(request: QueryRequest):
-    """Run a full RAG query and return a grounded answer."""
-    try:
-        chunks = get_retriever().retrieve(request.query, top_k=request.top_k)
-        result = get_generator().generate(request.query, chunks)
 
-        chunks_out = [
-            RetrievedChunkOut(
-                text=rc.chunk.text,
-                score=rc.score,
-                rank=rc.rank,
-                source=rc.chunk.metadata.get("source", "unknown"),
-            )
-            for rc in chunks
-        ]
-
-        eval_out = None
-        if request.evaluate:
-            eval_result = get_evaluator().evaluate(result)
-            eval_out = eval_result.to_dict()
-
-        return QueryResponse(
-            answer=result.answer,
-            query=result.query,
-            sources=result.sources,
-            chunks=chunks_out,
-            model=result.model,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-            latency_ms=result.latency_ms,
-            trace_id=result.trace_id,
-            eval=eval_out,
+def validate_query(request: QueryRequest, http: Request):
+    access = app.state.access
+    if request.top_k > access.limits.top_k:
+        raise HTTPException(
+            422, [{"loc": ["body", "top_k"], "msg": "Retrieval limit exceeded"}]
         )
-    except Exception as exc:
-        logger.exception("Query failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+    if len(request.query) > access.limits.query_chars:
+        raise HTTPException(422, "Query too long")
+    if request.evaluate:
+        if http.state.role != Role.ADMIN:
+            raise HTTPException(403, "Evaluation requires administrator permission")
+        if http.url.path == "/query/stream":
+            raise HTTPException(422, "Evaluation requires the non-streaming query endpoint")
+        access.budget.charge(Role.ADMIN, "evaluate")
 
 
-@app.post("/query/stream", dependencies=[Depends(require_ai)], tags=["Query"])
-async def query_stream(request: QueryRequest):
+@protected.post(
+    "/query",
+    response_model=QueryResponse,
+    dependencies=[Depends(validate_query), Depends(ai_slot, scope="request")],
+    tags=["Query"],
+)
+def query(request: QueryRequest):
+    """Run a full RAG query and return a grounded answer."""
+    chunks = get_retriever().retrieve(request.query, top_k=request.top_k)
+    result = get_generator().generate(request.query, chunks)
+
+    chunks_out = [
+        RetrievedChunkOut(
+            text=rc.chunk.text,
+            score=rc.score,
+            rank=rc.rank,
+            source=rc.chunk.metadata.get("source", "unknown"),
+        )
+        for rc in chunks
+    ]
+
+    eval_out = None
+    if request.evaluate:
+        eval_result = get_evaluator().evaluate(result)
+        eval_out = eval_result.to_dict()
+
+    return QueryResponse(
+        answer=result.answer,
+        query=result.query,
+        sources=result.sources,
+        chunks=chunks_out,
+        model=result.model,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        latency_ms=result.latency_ms,
+        trace_id=result.trace_id,
+        eval=eval_out,
+    )
+
+
+@protected.post(
+    "/query/stream", dependencies=[Depends(ai_slot, scope="request")], tags=["Query"]
+)
+def query_stream(request: QueryRequest, http: Request):
     """
     Streaming RAG query — returns answer tokens as Server-Sent Events.
     Connect with EventSource in the browser.
     """
-    try:
-        chunks = get_retriever().retrieve(request.query, top_k=request.top_k)
+    chunks = get_retriever().retrieve(request.query, top_k=request.top_k)
 
-        async def token_stream():
+    def token_stream():
+        try:
             for token in get_generator().generate_stream(request.query, chunks):
-                yield f"data: {token}\n\n"
-            yield "data: [DONE]\n\n"
+                yield "".join(f"data: {line}\n" for line in token.split("\n")) + "\n"
+        except Exception:  # noqa: BLE001 - sanitise untrusted parser and backend failures
+            logger.warning("stream_failed request_id=%s", http.state.request_id)
+            yield "event: error\ndata: Generation interrupted\n\n"
+            return
+        yield "data: [DONE]\n\n"
 
-        return StreamingResponse(token_stream(), media_type="text/event-stream")
-    except Exception as exc:
-        logger.exception("Stream query failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+    return StreamingResponse(token_stream(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------
 # Eval endpoint
 # ---------------------------------------------------------------------------
 
-@app.post("/evaluate", dependencies=[Depends(require_ai)], tags=["Evals"])
-async def evaluate(request: EvalRequest):
+
+@protected.post(
+    "/evaluate", dependencies=[Depends(ai_slot, scope="request")], tags=["Evals"]
+)
+def evaluate(request: EvalRequest):
     """Evaluate a query-answer pair. Provide context_texts from a prior /query call."""
     from core.models import Chunk, GenerationResult, RetrievedChunk
+
+    limits = app.state.access.limits
+    if (
+        len(request.query) > limits.query_chars
+        or len(request.answer) + sum(map(len, request.context_texts))
+        > limits.context_chars
+        or any(not text.strip() for text in request.context_texts)
+    ):
+        raise HTTPException(422, "Invalid evaluation input")
 
     # Build a minimal GenerationResult from the request
     fake_chunks = [
@@ -361,38 +502,40 @@ async def evaluate(request: EvalRequest):
         trace_id=request.trace_id,
     )
 
-    try:
-        eval_result = get_evaluator().evaluate(gen_result)
-        return eval_result.to_dict()
-    except Exception as exc:
-        logger.exception("Evaluation failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+    eval_result = get_evaluator().evaluate(gen_result)
+    return eval_result.to_dict()
 
 
 # ---------------------------------------------------------------------------
 # Observability endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/metrics", response_model=MetricsResponse, tags=["Observability"])
+
+@protected.get("/metrics", response_model=MetricsResponse, tags=["Observability"])
 async def metrics():
     """Pipeline health check + aggregate statistics."""
     from core.evals import load_evals
     from core.telemetry import load_traces
 
     traces = load_traces()
-    evals  = load_evals()
+    evals = load_evals()
 
     llm_spans = [
-        t for t in traces
-        if t["name"] == "generator.llm_call" and "llm.latency_ms" in t.get("attributes", {})
+        t
+        for t in traces
+        if t["name"] == "generator.llm_call"
+        and "llm.latency_ms" in t.get("attributes", {})
     ]
     avg_latency = (
-        round(sum(t["attributes"]["llm.latency_ms"] for t in llm_spans) / len(llm_spans), 1)
-        if llm_spans else None
+        round(
+            sum(t["attributes"]["llm.latency_ms"] for t in llm_spans) / len(llm_spans),
+            1,
+        )
+        if llm_spans
+        else None
     )
     avg_score = (
-        round(sum(e["overall_score"] for e in evals) / len(evals), 3)
-        if evals else None
+        round(sum(e["overall_score"] for e in evals) / len(evals), 3) if evals else None
     )
 
     return MetricsResponse(
@@ -406,23 +549,25 @@ async def metrics():
     )
 
 
-@app.get("/traces", tags=["Observability"])
+@protected.get("/traces", tags=["Observability"])
 async def traces(limit: int = Query(default=50, ge=1, le=500)):
     """Return recent OTel span records from traces.jsonl."""
     from core.telemetry import load_traces
+
     records = load_traces(limit=limit)
     return {"traces": records, "count": len(records)}
 
 
-@app.get("/evals", tags=["Observability"])
+@protected.get("/evals", tags=["Observability"])
 async def evals(limit: int = Query(default=50, ge=1, le=500)):
     """Return recent eval results from evals.jsonl."""
     from core.evals import load_evals
+
     records = load_evals(limit=limit)
     return {"evals": records, "count": len(records)}
 
 
-@app.get("/sources", tags=["Observability"])
+@protected.get("/sources", tags=["Observability"])
 async def sources():
     """List all source documents currently in the vector store."""
     return {"sources": get_store().list_sources()}
@@ -432,60 +577,48 @@ async def sources():
 # Document management
 # ---------------------------------------------------------------------------
 
-@app.delete("/documents/{doc_id}", tags=["Documents"])
+
+@protected.delete("/documents/{doc_id}", tags=["Documents"])
 async def delete_document(doc_id: str):
     """Remove all chunks belonging to a document by doc_id."""
     try:
         deleted = get_store().delete_document(doc_id)
-    except NotFoundError as exc:
-        # An unmatched document returns zero. A missing collection is a store failure.
-        logger.exception(
-            "Document deletion failed because the collection is unavailable"
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Document store unavailable",
-        ) from exc
-    except Exception as exc:
-        logger.exception("Document deletion failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Document deletion failed",
-        ) from exc
-
+    except NotFoundError:
+        raise HTTPException(503, "Document store unavailable") from None
     return {"status": "ok", "deleted_chunks": deleted, "doc_id": doc_id}
+
 
 # ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
+
 @app.get("/health", tags=["Health"])
 async def health():
     try:
-        count = get_store().count()
-    except Exception as exc:
-        logger.exception("Health check failed")
-        raise HTTPException(503, "Document store unavailable") from exc
-    return {
-        "status": "ok",
-        "collection_size": count,
-        "timestamp": time.time(),
-    }
+        get_store().count()
+    except Exception:  # noqa: BLE001 - sanitise untrusted parser and backend failures
+        raise HTTPException(503, "Service unavailable") from None
+    return {"status": "ok"}
+
+
 @app.get("/live", tags=["Health"])
 async def live():
     return {"status": "ok"}
 
 
-@app.get("/ready", tags=["Health"])
+@protected.get("/ready", tags=["Health"])
 async def ready():
     try:
         get_store().count()
         database = True
-    except Exception:
-        logger.exception("Readiness database probe failed")
+    except Exception:  # noqa: BLE001 - sanitise untrusted parser and backend failures
+        logger.warning("database_probe_failed")
         database = False
     smoke = app.state.smoke
-    configured = all(os.getenv(key, "").strip() for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"))
+    configured = all(
+        os.getenv(key, "").strip() for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    )
     rag_ready = database and configured and not smoke
     return JSONResponse(
         status_code=200 if database and (smoke or configured) else 503,
@@ -496,3 +629,6 @@ async def ready():
             "rag_ready": rag_ready,
         },
     )
+
+
+app.include_router(protected)

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,14 +17,14 @@ def smoke(monkeypatch, mocker, tmp_path):
         "core.vector_store.VectorStore",
         side_effect=lambda: VectorStore(str(tmp_path / "db")),
     )
-    with TestClient(api.app) as client:
+    with TestClient(api.app, headers={"X-API-Key": os.environ["RAG_ADMIN_API_KEY"]}) as client:
         yield client
     factory.assert_called_once_with()
 
 
 def test_smoke_startup_and_storage(smoke):
     assert smoke.get("/live").json() == {"status": "ok"}
-    assert smoke.get("/health").json()["collection_size"] == 0
+    assert smoke.get("/health").json() == {"status": "ok"}
     assert "/query" in smoke.get("/openapi.json").json()["paths"]
     response = smoke.get("/ready?RAG_SMOKE_TEST_MODE=false")
     assert response.status_code == 200
@@ -66,14 +68,14 @@ def test_store_failure(smoke):
 def test_startup_fails_on_inaccessible_store(monkeypatch, mocker):
     monkeypatch.setenv("RAG_SMOKE_TEST_MODE", "true")
     mocker.patch("core.vector_store.VectorStore", side_effect=OSError("unavailable"))
-    with pytest.raises(OSError, match="unavailable"), TestClient(api.app):
+    with pytest.raises(OSError, match="unavailable"), TestClient(api.app, headers={"X-API-Key": os.environ["RAG_ADMIN_API_KEY"]}):
         pass
 
 
 def test_normal_mode_default_and_configuration(monkeypatch, mocker):
     for name in ("pipeline", "retriever", "generator"):
         mocker.patch.object(api, "get_" + name)
-    with TestClient(api.app) as client:
+    with TestClient(api.app, headers={"X-API-Key": os.environ["RAG_ADMIN_API_KEY"]}) as client:
         result = client.get("/ready?RAG_SMOKE_TEST_MODE=true")
         assert result.status_code == 503
         assert result.json()["mode"] == "normal"
@@ -85,7 +87,7 @@ def test_normal_mode_default_and_configuration(monkeypatch, mocker):
 
 def test_invalid_mode(monkeypatch):
     monkeypatch.setenv("RAG_SMOKE_TEST_MODE", "sometimes")
-    with pytest.raises(ValueError, match="must be true or false"), TestClient(api.app):
+    with pytest.raises(ValueError, match="must be true or false"), TestClient(api.app, headers={"X-API-Key": os.environ["RAG_ADMIN_API_KEY"]}):
         pass
 
 

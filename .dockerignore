@@ -3,6 +3,7 @@
 !Dockerfile
 !requirements.txt
 !api.py
+!api_security.py
 !rag_config.py
 !core/
 !core/*.py

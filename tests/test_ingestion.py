@@ -9,6 +9,7 @@ from core.models import EmbeddedChunk
 @pytest.fixture
 def pipeline(vector_store, mocker):
     client = mocker.patch("core.ingestion_pipeline.Embedder").return_value
+    client.batch_size = 100
     client.model = "offline"
     client.embed.side_effect = lambda chunks: [
         EmbeddedChunk(c, [1.0, 0.0], client.model) for c in chunks
@@ -76,4 +77,16 @@ def test_embedding_failure_prevents_storage(pipeline, mocker):
     with pytest.raises(RuntimeError, match="embedding failed"):
         pipeline.ingest_text("one two")
     upsert.assert_not_called()
+    assert pipeline.store.count() == 0
+
+
+@pytest.mark.parametrize("limit", ["CHUNKS", "EMBEDDING_BATCHES"])
+def test_excessive_ingestion_never_embeds(pipeline, document, monkeypatch, limit):
+    from rag_config import ResourceLimit
+
+    monkeypatch.setenv("RAG_LIMIT_" + limit, "1")
+    pipeline.embedder.batch_size = 1
+    with pytest.raises(ResourceLimit):
+        pipeline.ingest_documents([document, document])
+    pipeline.embedder.embed.assert_not_called()
     assert pipeline.store.count() == 0

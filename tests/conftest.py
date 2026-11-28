@@ -1,5 +1,6 @@
 """Install the offline boundary before pytest imports application modules."""
 
+import secrets
 import socket
 from contextvars import ContextVar
 from pathlib import Path
@@ -17,6 +18,8 @@ def pytest_configure(config):
     patch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
     # Chroma settings can also use python-dotenv through pydantic-settings.
     patch.setattr(dotenv.main.DotEnv, "dict", lambda self: {})
+    for role in ("READER", "EDITOR", "ADMIN"):
+        patch.setenv(f"RAG_{role}_API_KEY", secrets.token_hex(32))
     patch.delenv("RAG_SMOKE_TEST_MODE", raising=False)
     for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         patch.delenv(key, raising=False)
@@ -176,3 +179,21 @@ def openai_response():
         )
 
     return response
+
+
+@pytest.fixture
+def services(mocker, generation):
+    import api
+
+    deps = SimpleNamespace(
+        **{
+            name: mocker.patch.object(api, f"_{name}")
+            for name in ("pipeline", "retriever", "generator", "evaluator")
+        }
+    )
+    deps.pipeline.store.count.return_value = 8
+    deps.pipeline.store.list_sources.return_value = ["report"]
+    deps.retriever.retrieve.return_value = generation.retrieved_chunks
+    deps.generator.generate.return_value = generation
+    deps.evaluator.evaluate.return_value.to_dict.return_value = {"overall_score": 0.75}
+    return deps

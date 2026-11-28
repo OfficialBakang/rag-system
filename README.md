@@ -8,9 +8,6 @@
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector%20Database-orange)
 ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Tracing-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-RAG-7C3AED)
-![Tests](https://img.shields.io/badge/Tests-71%20Passing-brightgreen)
-![Coverage](https://img.shields.io/badge/Coverage-92.26%25-brightgreen)
-![Docker](https://img.shields.io/badge/Docker-Smoke%20Tests%20Passing-2496ED?logo=docker&logoColor=white)
 
 An end-to-end Retrieval-Augmented Generation (RAG) system combining semantic search, document ingestion, grounded LLM generation, OpenTelemetry instrumentation and automated answer evaluation through a FastAPI backend.
 
@@ -265,6 +262,14 @@ See [.env.example](.env.example) for the available configuration.
 Never commit your actual `.env` file.
 
 
+Before starting the HTTP API, set three separate service keys in your runtime environment or local .env file. Generate each independently with Python and keep terminal output private.
+
+```cmd
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Assign one key each to RAG_READER_API_KEY, RAG_EDITOR_API_KEY and RAG_ADMIN_API_KEY. Swagger accepts a key through Authorize. Set RAG_PUBLIC_DOCS=false to disable public documentation.
+
 ### 5. Run the Live Pipeline Smoke Test (requires provider credentials)
 
 ```bash
@@ -276,7 +281,7 @@ The script ingests sample documents, performs retrieval, generates an answer and
 ### 6. Start the API
 
 ```bash
-python -m uvicorn api:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn api:app --no-access-log --no-proxy-headers --reload --host 127.0.0.1 --port 8000
 ```
 
 The API will be available at:
@@ -310,12 +315,12 @@ From the repository root, create a local configuration file if needed (Windows C
 if not exist .env copy .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` in that file and keep
+Set the three generated RAG service keys plus `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` in that file and keep
 `RAG_SMOKE_TEST_MODE=false`. Compose supplies the values when the container starts.
 
 ```cmd
 docker compose up --build -d
-curl.exe http://127.0.0.1:8000/ready
+curl.exe http://127.0.0.1:8000/health
 ```
 
 Compose binds port 8000 to loopback and mounts the named volume `rag-data` at
@@ -331,7 +336,7 @@ docker build --target runtime -t rag-system:smoke .
 python scripts/docker_smoke.py --image rag-system:smoke
 ```
 
-The runner starts the image with empty provider credentials, no published ports
+The runner starts the image with empty provider credentials, disposable random service keys, no published ports
 and `--network none`. It probes HTTP over container loopback, checks UID 10001,
 runtime dependencies, cached tokenization, writable storage and absence of
 `/app/.env`. A separate short-lived writer inserts and queries a synthetic vector
@@ -345,7 +350,7 @@ Provider authentication, model access and answer quality require live integratio
 | Endpoint | Successful probe | Failure |
 |---|---|---|
 | `/live` | HTTP 200 while the API is serving | A stopped process cannot respond |
-| `/health` | HTTP 200 with the existing status, collection size and timestamp | HTTP 503 if the collection count fails |
+| `/health` | HTTP 200 with only the status field | HTTP 503 if the collection count fails |
 | `/ready` | HTTP 200 when the local store works in smoke mode, or the store works and both provider keys are configured after normal startup | HTTP 503 when a required local check fails |
 | `/openapi.json` | FastAPI schema in either mode | A startup failure prevents serving the schema |
 
@@ -396,12 +401,12 @@ failure leaves liveness available for diagnosis.
 
 ## API Usage Examples
 
-The examples below use curl with Bash-compatible quoting. Windows users can use the interactive Swagger UI instead.
+The examples below use curl with Bash-compatible quoting. Set RAG_API_KEY in your shell to a credential with the required role. Windows users can use the interactive Swagger UI instead.
 
 ### Ingest Raw Text
 
 ```bash
-curl -X POST http://127.0.0.1:8000/ingest/text \
+curl -H "X-API-Key: $RAG_API_KEY" -X POST http://127.0.0.1:8000/ingest/text \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Retrieval-Augmented Generation combines information retrieval with language model generation.",
@@ -412,14 +417,14 @@ curl -X POST http://127.0.0.1:8000/ingest/text \
 ### Upload a Document
 
 ```bash
-curl -X POST http://127.0.0.1:8000/ingest/file \
+curl -H "X-API-Key: $RAG_API_KEY" -X POST http://127.0.0.1:8000/ingest/file \
   -F "file=@document.pdf"
 ```
 
 ### Query the Knowledge Base
 
 ```bash
-curl -X POST http://127.0.0.1:8000/query \
+curl -H "X-API-Key: $RAG_API_KEY" -X POST http://127.0.0.1:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "How does retrieval-augmented generation work?",
@@ -444,7 +449,7 @@ The response includes:
 ### Query With Evaluation
 
 ```bash
-curl -X POST http://127.0.0.1:8000/query \
+curl -H "X-API-Key: $RAG_API_KEY" -X POST http://127.0.0.1:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "What is retrieval-augmented generation?",
@@ -458,7 +463,7 @@ Enabling evaluation performs additional LLM calls and may increase latency and A
 ### Stream a Response
 
 ```bash
-curl -N -X POST http://127.0.0.1:8000/query/stream \
+curl -H "X-API-Key: $RAG_API_KEY" -N -X POST http://127.0.0.1:8000/query/stream \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Explain RAG architecture.",
@@ -469,13 +474,13 @@ curl -N -X POST http://127.0.0.1:8000/query/stream \
 ### Inspect Pipeline Metrics
 
 ```bash
-curl http://127.0.0.1:8000/metrics
+curl -H "X-API-Key: $RAG_API_KEY" http://127.0.0.1:8000/metrics
 ```
 
 ### Inspect Recent Traces
 
 ```bash
-curl "http://127.0.0.1:8000/traces?limit=10"
+curl -H "X-API-Key: $RAG_API_KEY" "http://127.0.0.1:8000/traces?limit=10"
 ```
 
 ### Check Application Health
@@ -553,7 +558,7 @@ Trace records contain information such as:
 - Execution status.
 - Timestamp.
 
-The API exposes trace and evaluation records for inspection.
+Administrators can inspect numeric span attributes and evaluation history. Earlier on-disk records may require separate retention or cleanup.
 
 ### Optional OTLP Export
 
@@ -575,32 +580,11 @@ The project includes an isolated automated testing suite covering
 the core RAG pipeline, FastAPI endpoints, regression scenarios
 and application reliability.
 
-### Verified Quality Metrics
+### Verification
 
-| Metric | Result |
-|---|---|
-| Automated tests | 71/71 passing (60 original, 11 smoke regressions) |
-| Statement coverage | 92.18% |
-| Statements exercised | 896 / 972 |
-| Minimum coverage threshold | 85% |
-| Chunker coverage | 100% |
-| Embedder coverage | 100% |
-| Generator coverage | 100% |
-| Python version | 3.12 |
-| Platform verified for this revision | Windows, Python 3.12.10 |
-| Automated tests | 71/71 passing |
-| Statement coverage | 92.26% |
-| Statements exercised | 906 / 982 |
-| Minimum coverage threshold | 85% |
-| Scoped Ruff linting | Passing |
-| Python version | 3.12 |
-| Docker runtime build | Passing locally |
-| Credential-free Docker smoke tests | Passing locally |
-| Persistent vector storage | Verified after container recreation |
-| External network isolation | Enabled during Docker smoke testing |
-| Real API credentials required for smoke tests | No |
-| Remote GitHub Actions verification | Pending |
+Local verification on Windows with Python 3.12.10 passed 137 tests with 94.06% statement coverage. Bandit returned zero findings. The runtime dependency audit found four distinct ChromaDB advisories. See [SECURITY.md](SECURITY.md) for severity and release impact.
 
+CI requires at least 85% statement coverage across the core package, API, configuration and HTTP security module. The security job and hardened Docker smoke run require their own successful executions after these changes.
 
 ### Automated Test Coverage
 
@@ -640,7 +624,7 @@ python -m pytest tests/ -v
 ### Measure Code Coverage
 
 ```bash
-python -m pytest tests/ --cov=core --cov=api --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=85
+python -m pytest tests/ --cov=core --cov=api --cov=rag_config --cov=api_security --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=85
 ```
 
 Coverage reports are generated at:
@@ -651,7 +635,7 @@ Coverage reports are generated at:
 ### Code Quality
 
 ```bash
-python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py core/telemetry.py core/evals.py core/vector_store.py api.py rag_config.py scripts/docker_smoke.py
+python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py core/telemetry.py core/evals.py core/vector_store.py core/generator.py core/embedder.py core/loader.py core/retriever.py api.py rag_config.py api_security.py scripts/docker_smoke.py
 python -m pip check
 ```
 
@@ -686,7 +670,7 @@ The configured quality gates include:
 
 A separate Ubuntu job validates Compose, builds the runtime target, reports image
 size and runs the isolated Docker smoke script under a 25-minute timeout. It uses
-read-only repository permissions and requires no repository secrets. Remote Docker
+read-only repository permissions and requires no repository secrets. A separate security job runs Bandit, pip-audit and Trivy against source, resolved runtime packages and the built runtime image. Remote Docker
 CI verification is pending.
 
 ### Live Integration Smoke Tests
@@ -779,6 +763,9 @@ rag-system/
 │   └── evals.jsonl
 │
 ├── .gitignore
+├── SECURITY.md
+├── api_security.py
+├── rag_config.py
 ├── api.py
 ├── requirements.txt
 ├── test_pipeline.py
@@ -804,35 +791,22 @@ The local data directory contains runtime-generated storage and diagnostic recor
 | `telemetry.py` | Tracing and span persistence |
 | `evals.py` | LLM-based quality evaluation |
 | `api.py` | REST endpoints and application lifecycle |
+| `api_security.py` | Service authentication, permissions, admission limits and security headers |
+| `rag_config.py` | Runtime mode and validated limits |
+| `SECURITY.md` | Deployment model, threat model and vulnerability management |
 
-## Security and Deployment Considerations
+## API security and deployment
 
-This project is currently intended for local development and engineering demonstration.
+Clients present one service credential in the X-API-Key header. Reader, editor and admin roles share a single tenant. The role matrix, threat model, configuration limits, intentional API changes, vulnerability policy and reporting channel are documented in [SECURITY.md](SECURITY.md).
 
-Before exposing the API publicly:
-
-- Implement authentication and authorisation.
-- Restrict allowed CORS origins.
-- Introduce API rate limiting.
-- Enforce upload size limits and file validation.
-- Protect trace and evaluation endpoints.
-- Implement appropriate secret management.
-- Add data retention and deletion policies.
-- Prevent sensitive information from appearing in logs.
-- Implement prompt injection defences.
-- Use secure telemetry transport.
-- Sanitise internal exception details returned to clients.
-
-Document content and user queries may be transmitted to external AI providers as part of embedding, generation and evaluation operations.
-
-Retrieved documents should be treated as untrusted data rather than executable instructions.
+The HTTP boundary authenticates and charges a monotonic, process-local budget before passing bounded request bytes to FastAPI. Protected routes enforce role permissions and AI requests hold a concurrency slot until the response or stream finishes. Uploads use a temporary server-owned directory. Validated text enters the existing chunking, embedding and storage pipeline. The model receives retrieved text as untrusted evidence and has no privileged tools. Traces retain numeric measurements and evaluation history retains scores and identifiers.
 
 ## Current Limitations
 
 - External API credentials are required for the full pipeline.
 - Model-based evaluations are not equivalent to ground-truth benchmarks.
 - Embedding and LLM requests introduce external service dependencies.
-- The current API does not include built-in authentication.
+- Role keys grant corpus-wide access. Individual identities and per-document isolation require additional controls.
 - Several API operations use synchronous underlying processing.
 - Distributed worker execution has not been established.
 - A dedicated frontend dashboard is not included in the public repository.
@@ -860,7 +834,7 @@ Retrieved documents should be treated as untrusted data rather than executable i
 ### Planned Improvements
 
 - [ ] Reproducible dependency locking.
-- [ ] Authentication and authorisation.
+- [ ] Per-user identity and document-level access controls.
 - [ ] Asynchronous pipeline processing.
 - [ ] Hybrid keyword and semantic search.
 - [ ] Ground-truth evaluation datasets.

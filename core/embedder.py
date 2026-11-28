@@ -17,11 +17,12 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Iterator
+from collections.abc import Iterator
 
-from openai import OpenAI
+from openai import APIError, OpenAI
 
 from core.models import Chunk, EmbeddedChunk
+from rag_config import Limits, ResourceLimit
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class Embedder:
     ):
         self.model = model
         self.batch_size = batch_size
-        self._client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self._client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), max_retries=0, timeout=30)
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,9 +80,13 @@ class Embedder:
         total_tokens = 0
         t0 = time.perf_counter()
 
+        max_calls = Limits.load().embedding_batches
+        if len(chunks) > max_calls * self.batch_size:
+            raise ResourceLimit()
+        calls = iter(range(max_calls))
         for batch_num, batch in enumerate(_batched(chunks, self.batch_size), start=1):
             texts = [c.text for c in batch]
-            vectors, usage = self._embed_with_retry(texts)
+            vectors, usage = self._embed_with_retry(texts, calls)
             total_tokens += usage
 
             for chunk, vector in zip(batch, vectors):
@@ -116,7 +121,7 @@ class Embedder:
     # ------------------------------------------------------------------
 
     def _embed_with_retry(
-        self, texts: list[str]
+        self, texts: list[str], calls: Iterator[int] | None = None
     ) -> tuple[list[list[float]], int]:
         """
         Call the embeddings API with exponential-backoff retry.
@@ -125,6 +130,8 @@ class Embedder:
         last_exc: Exception | None = None
 
         for attempt in range(1, _RETRY_ATTEMPTS + 1):
+            if calls is not None and next(calls, None) is None:
+                raise ResourceLimit()
             try:
                 response = self._client.embeddings.create(
                     model=self.model,
@@ -135,18 +142,20 @@ class Embedder:
                 tokens = response.usage.total_tokens
                 return vectors, tokens
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - bounded retries for transport failures
                 last_exc = exc
                 wait = _RETRY_DELAY * (2 ** (attempt - 1))
                 logger.warning(
-                    "Embedding API error (attempt %d/%d): %s — retrying in %.1fs",
+                    "Embedding API error (attempt %d/%d) — retrying in %.1fs",
                     attempt,
                     _RETRY_ATTEMPTS,
-                    exc,
                     wait,
                 )
-                time.sleep(wait)
+                if attempt < _RETRY_ATTEMPTS:
+                    time.sleep(wait)
 
+        if isinstance(last_exc, APIError):
+            raise last_exc
         raise RuntimeError(
             f"Embedding failed after {_RETRY_ATTEMPTS} attempts"
         ) from last_exc

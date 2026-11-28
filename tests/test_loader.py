@@ -39,8 +39,9 @@ def test_extract_formats(tmp_path, suffix, raw, content, title):
 
 def test_pdf(tmp_path, mocker):
     path = tmp_path / "test.pdf"
-    path.touch()
+    path.write_bytes(b"%PDF-1.7")
     reader = mocker.patch("pypdf.PdfReader").return_value
+    reader.is_encrypted = False
     reader.pages = [mocker.Mock(), mocker.Mock()]
     for page, text in zip(reader.pages, ("First", "Second"), strict=True):
         page.extract_text.return_value = text

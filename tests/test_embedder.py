@@ -50,3 +50,15 @@ def test_exhausted_retries_preserve_cause(mocker):
         Embedder().embed_query("why")
     assert exc.value.__cause__ is error
     assert create.call_count == 3
+
+
+def test_batch_budget_includes_retries(chunk, mocker, monkeypatch):
+    from rag_config import ResourceLimit
+
+    monkeypatch.setenv("RAG_LIMIT_EMBEDDING_BATCHES", "1")
+    mocker.patch("core.embedder.time.sleep")
+    calls = mocker.patch("core.embedder.OpenAI").return_value.embeddings.create
+    calls.side_effect = TimeoutError("private")
+    with pytest.raises(ResourceLimit):
+        Embedder().embed([chunk])
+    assert calls.call_count == 1

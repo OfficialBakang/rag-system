@@ -44,7 +44,7 @@ COPY --from=builder /opt/venv /opt/venv
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 COPY --chown=appuser:appuser core/ ./core/
-COPY --chown=appuser:appuser api.py rag_config.py ./
+COPY --chown=appuser:appuser api.py rag_config.py api_security.py ./
 
 RUN chown -R appuser:appuser /app/data /opt/tokenizer-cache
 
@@ -55,4 +55,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
 
-CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--limit-concurrency", "32", "--no-access-log", "--no-proxy-headers"]

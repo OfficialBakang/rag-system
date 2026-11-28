@@ -20,7 +20,7 @@ from core.loader import DocumentLoader
 from core.models import Document
 from core.telemetry import record_span
 from core.vector_store import VectorStore
-from rag_config import load_settings
+from rag_config import Limits, ResourceLimit, load_settings
 
 load_settings()
 logger = logging.getLogger(__name__)
@@ -75,16 +75,21 @@ class IngestionPipeline:
     # ------------------------------------------------------------------
 
     def _process_documents(self, docs: list[Document]) -> dict:
+        limits = Limits.load()
+        if sum(len(d.content) for d in docs) > limits.extracted_chars:
+            raise ResourceLimit()
         sources = [d.source for d in docs]
 
         with record_span("ingestion.pipeline", {
             "doc.count": len(docs),
             "doc.sources": str(sources),
-        }) as pipeline_span:
+        }):
 
             # Stage 1: Chunk
             with record_span("ingestion.chunk", {"doc.count": len(docs)}) as chunk_span:
                 chunks = self.chunker.chunk_many(docs)
+                if len(chunks) > min(limits.chunks, limits.embedding_batches * self.embedder.batch_size):
+                    raise ResourceLimit()
                 total_tokens = sum(c.token_count for c in chunks)
                 chunk_span["chunk.count"] = len(chunks)
                 chunk_span["chunk.total_tokens"] = total_tokens
@@ -110,6 +115,5 @@ class IngestionPipeline:
                 "collection_total": self.store.count(),
                 "sources": sources,
             }
-            pipeline_span["ingestion.summary"] = str(summary)
             logger.info("Ingestion complete — %d docs, %d chunks", len(docs), len(chunks))
             return summary

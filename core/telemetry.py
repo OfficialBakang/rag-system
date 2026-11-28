@@ -90,9 +90,9 @@ def _build_provider() -> TracerProvider:
                 insecure=True,
             )
             provider.add_span_processor(BatchSpanProcessor(otlp))
-            logger.info("OTLP exporter configured → %s", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
-        except Exception:
-            logger.exception("OTLP exporter unavailable — console only")
+            logger.info("OTLP exporter configured")
+        except Exception:  # noqa: BLE001 - optional exporter setup
+            logger.warning("OTLP exporter unavailable")
 
     trace.set_tracer_provider(provider)
     return provider
@@ -151,12 +151,12 @@ def record_span(
             results = vector_store.query(...)
             span["result.count"] = len(results)   # add attrs mid-span
     """
-    attrs = dict(attributes or {})
+    attrs = {k: v for k, v in (attributes or {}).items() if isinstance(v, (int, float, bool))}
     start = time.perf_counter()
     start_wall = time.time()
     status = "OK"
 
-    with tracer.start_as_current_span(name) as otel_span:
+    with tracer.start_as_current_span(name, record_exception=False, set_status_on_exception=False) as otel_span:
         # Attach initial attributes to OTel span
         for k, v in attrs.items():
             otel_span.set_attribute(k, v)
@@ -164,14 +164,15 @@ def record_span(
         # Expose a simple dict-like interface for adding attributes mid-span
         class SpanProxy:
             def __setitem__(self, key: str, value: Any):
+                if not isinstance(value, (int, float, bool)):
+                    return
                 otel_span.set_attribute(key, value)
                 attrs[key] = value
 
             def set_error(self, exc: Exception):
                 nonlocal status
                 status = "ERROR"
-                otel_span.set_status(Status(StatusCode.ERROR, str(exc)))
-                otel_span.record_exception(exc)
+                otel_span.set_status(Status(StatusCode.ERROR))
 
         proxy = SpanProxy()
         try:
@@ -237,7 +238,10 @@ def load_traces(limit: int = 200) -> list[dict]:
     records = []
     for line in lines[-limit:]:
         try:
-            records.append(json.loads(line))
+            record = json.loads(line)
+            if "attributes" in record:
+                record["attributes"] = {k:v for k,v in record["attributes"].items() if isinstance(v, (int, float, bool))}
+            records.append(record)
         except json.JSONDecodeError:
             continue
     return records

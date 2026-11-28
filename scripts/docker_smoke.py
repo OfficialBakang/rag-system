@@ -1,6 +1,8 @@
 """Verify the built runtime with Docker CLI, disposable storage and loopback HTTP."""
 
 import argparse
+import os
+import secrets
 import subprocess
 import sys
 import time
@@ -8,9 +10,9 @@ import uuid
 from contextlib import ExitStack, contextmanager
 
 
-def docker(*args, timeout=90, check=True):
+def docker(*args, timeout=90, check=True, env=None):
     result = subprocess.run(
-        ["docker", *args], text=True, capture_output=True, timeout=timeout, check=False
+        ["docker", *args], env=env, text=True, capture_output=True, timeout=timeout, check=False
     )
     if check and result.returncode:
         raise RuntimeError(f"docker {args[0]} failed: {result.stderr or result.stdout}")
@@ -20,6 +22,7 @@ def docker(*args, timeout=90, check=True):
 @contextmanager
 def container(image, volume, *command):
     name = f"rag-smoke-{uuid.uuid4().hex}"
+    keys = {f"RAG_{role}_API_KEY": secrets.token_hex(32) for role in ("READER", "EDITOR", "ADMIN")}
     cid = docker(
         "create",
         "--pull=never",
@@ -35,8 +38,10 @@ def container(image, volume, *command):
         "OPENAI_API_KEY=",
         "-e",
         "ANTHROPIC_API_KEY=",
+        *(arg for name in keys for arg in ("-e", name)),
         image,
         *command,
+        env=os.environ | keys,
     )
     try:
         docker("start", cid)
@@ -54,13 +59,15 @@ def container(image, volume, *command):
 
 
 HTTP = """
+import os
 import json
 import urllib.request
 from urllib.error import HTTPError
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 base = 'http://127.0.0.1:8000'
-def get(path):
-    with opener.open(base + path, timeout=4) as response:
+def get(path, role=None):
+    headers = {"X-API-Key":os.environ[f"RAG_{role}_API_KEY"]} if role else {}
+    with opener.open(urllib.request.Request(base + path, headers=headers), timeout=4) as response:
         return json.load(response)
 """
 
@@ -81,13 +88,20 @@ def wait_for_api(cid):
 CHECK_API = """
 assert get('/live') == {'status': 'ok'}
 health = get('/health')
-assert health['status'] == 'ok' and health['timestamp'] > 0
+assert health == {'status':'ok'}
+for role, status in [(None, 401), ('READER', 403)]:
+    try:
+        get('/ready', role)
+    except HTTPError as exc:
+        assert exc.code == status
+    else:
+        raise RuntimeError('Diagnostics unexpectedly accessible')
 assert '/query' in get('/openapi.json')['paths']
-assert get('/ready') == dict(mode='smoke', database_available=True,
+assert get('/ready', 'ADMIN') == dict(mode='smoke', database_available=True,
                             providers_configured=False, rag_ready=False)
 try:
     opener.open(urllib.request.Request(base + '/query',
-        data=b'{"query":"offline check"}', headers={'Content-Type':'application/json'}), timeout=4)
+        data=b'{"query":"offline check"}', headers={'Content-Type':'application/json', 'X-API-Key':os.environ['RAG_READER_API_KEY']}), timeout=4)
 except HTTPError as exc:
     assert exc.code == 503
     assert json.load(exc) == {'detail':'AI operations unavailable in smoke-test mode'}
@@ -148,8 +162,8 @@ def verify(image):
                 HTTP
                 + CHECK_API
                 + """
-assert health['collection_size'] == 1
-assert get('/sources') == {'sources':['smoke-fixture']}
+assert get('/metrics', 'ADMIN')['collection_size'] == 1
+assert get('/sources', 'EDITOR') == {'sources':['smoke-fixture']}
 """,
             )
     print("Docker smoke checks passed, including persistence after recreation.")

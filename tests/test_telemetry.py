@@ -15,7 +15,7 @@ def test_span_jsonl_and_history(logs):
     records = [json.loads(line) for line in logs[0].read_text().splitlines()]
     first, _ = records
     assert first["name"] == "operation" and first["status"] == "OK"
-    assert first["attributes"]["source"] == "local"
+    assert "source" not in first["attributes"]
     assert first["attributes"]["items"] == 3
     assert first["duration_ms"] >= 0 and first["attributes"]["duration_ms"] >= 0
     for key, width in (("trace_id", 32), ("span_id", 16)):

@@ -21,12 +21,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from core.models import Document
+from rag_config import Limits, ResourceLimit
 
 logger = logging.getLogger(__name__)
 
@@ -35,13 +35,20 @@ logger = logging.getLogger(__name__)
 # Format-specific extractors
 # ---------------------------------------------------------------------------
 
+def _decode(path):
+    text = path.read_text(encoding="utf-8-sig")
+    if any(ord(c) < 32 and c not in "\t\n\r" for c in text):
+        raise ValueError("Binary document")
+    return text
+
+
 def _load_text(path: Path) -> tuple[str, dict]:
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = _decode(path)
     return text, {}
 
 
 def _load_markdown(path: Path) -> tuple[str, dict]:
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = _decode(path)
     # Strip front-matter (---...---) if present
     lines = raw.splitlines()
     if lines and lines[0].strip() == "---":
@@ -59,10 +66,22 @@ def _load_pdf(path: Path) -> tuple[str, dict]:
     except ImportError:
         raise ImportError("Install pypdf: pip install pypdf")
 
-    reader = PdfReader(str(path))
+    with path.open("rb") as data:
+        if data.read(5) != b"%PDF-":
+            raise ValueError("Invalid PDF")
+    reader = PdfReader(str(path), strict=True)
+    if reader.is_encrypted:
+        raise ValueError("Encrypted PDF")
+    limits = Limits.load()
+    if len(reader.pages) > limits.pdf_pages:
+        raise ResourceLimit()
+    size = 0
     pages = []
-    for i, page in enumerate(reader.pages):
+    for page in reader.pages:
         text = page.extract_text() or ""
+        size += len(text) + (2 if pages else 0)
+        if size > limits.extracted_chars:
+            raise ResourceLimit()
         pages.append(text)
 
     full_text = "\n\n".join(pages)
@@ -79,14 +98,14 @@ def _load_html(path: Path) -> tuple[str, dict]:
     except ImportError:
         raise ImportError("Install beautifulsoup4: pip install beautifulsoup4")
 
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = _decode(path)
     soup = BeautifulSoup(raw, "html.parser")
 
     # Remove script/style noise
     for tag in soup(["script", "style", "nav", "footer"]):
         tag.decompose()
 
-    title = soup.title.string.strip() if soup.title else path.stem
+    title = soup.title.get_text(strip=True) if soup.title else path.stem
     text = soup.get_text(separator="\n", strip=True)
     return text, {"title": title}
 
@@ -139,6 +158,8 @@ class DocumentLoader:
         t0 = time.perf_counter()
         loader_fn = _LOADERS[suffix]
         text, extra_meta = loader_fn(path)
+        if len(text) > Limits.load().extracted_chars:
+            raise ResourceLimit()
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         doc_id = self._make_id(path)
@@ -159,9 +180,7 @@ class DocumentLoader:
             format=suffix.lstrip("."),
             metadata=metadata,
         )
-        logger.info(
-            "Loaded %s (%d chars, %.1f ms)", path.name, len(text), elapsed_ms
-        )
+        logger.info("Loaded document (%d chars, %.1f ms)", len(text), elapsed_ms)
         return doc
 
     def load_directory(
@@ -187,8 +206,8 @@ class DocumentLoader:
         for path in paths:
             try:
                 docs.append(self.load_file(path))
-            except Exception as exc:
-                logger.warning("Skipping %s — %s", path.name, exc)
+            except (ValueError, OSError):
+                logger.warning("Skipping unreadable document")
 
         logger.info(
             "Loaded %d/%d files from %s", len(docs), len(paths), directory

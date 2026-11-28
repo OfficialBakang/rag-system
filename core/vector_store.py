@@ -156,7 +156,7 @@ class VectorStore:
         ids_to_delete = existing["ids"]
         if ids_to_delete:
             self._col.delete(ids=ids_to_delete)
-        logger.info("Deleted %d chunks for doc_id=%r", len(ids_to_delete), doc_id)
+        logger.info("Deleted %d chunks", len(ids_to_delete))
         return len(ids_to_delete)
 
     def close(self) -> None:

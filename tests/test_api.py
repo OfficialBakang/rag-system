@@ -1,5 +1,5 @@
 import json
-from types import SimpleNamespace
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,36 +8,15 @@ import api
 
 
 @pytest.fixture
-def services(mocker, generation):
-    deps = SimpleNamespace(
-        **{
-            name: mocker.patch.object(api, f"_{name}")
-            for name in ("pipeline", "retriever", "generator", "evaluator")
-        }
-    )
-    deps.pipeline.store.count.return_value = 8
-    deps.pipeline.store.list_sources.return_value = ["report"]
-    deps.retriever.retrieve.return_value = generation.retrieved_chunks
-    deps.generator.generate.return_value = generation
-    deps.evaluator.evaluate.return_value.to_dict.return_value = {"overall_score": 0.75}
-    return deps
-
-
-@pytest.fixture
 def client(services):
-    with TestClient(api.app) as session:
+    with TestClient(api.app, headers={"X-API-Key": os.environ["RAG_ADMIN_API_KEY"]}) as session:
         yield session
 
 
 def test_health_and_schema(client):
     health = client.get("/health")
     assert health.status_code == 200
-    assert health.json() == {
-        "status": "ok",
-        "collection_size": 8,
-        "timestamp": health.json()["timestamp"],
-    }
-    assert health.json()["timestamp"] > 0
+    assert health.json() == {"status": "ok"}
     schema = client.get("/openapi.json")
     assert schema.status_code == 200
     assert "/query/stream" in schema.json()["paths"]
@@ -76,7 +55,7 @@ def test_validation_before_service_calls(client, services, route, body, field):
 
 def test_unsupported_upload(client, services):
     response = client.post("/ingest/file", files={"file": ("image.png", b"abc")})
-    assert response.status_code == 400 and ".png" in response.json()["detail"]
+    assert response.status_code == 415 and response.json()["detail"] == "Unsupported document format"
     services.pipeline.ingest_file.assert_not_called()
 
 
@@ -192,7 +171,8 @@ def test_dependency_errors(client, services, route):
         },
     )
     assert response.status_code == 500
-    assert response.json()["detail"] == "dependency unavailable"
+    assert response.json()["detail"] == "Request failed"
+    assert "dependency unavailable" not in response.text
 
 
 def test_delete_missing_document_is_idempotent(client, services, vector_store):
@@ -210,7 +190,7 @@ def test_delete_missing_collection_returns_unavailable(
     response = client.delete("/documents/abc")
     assert response.status_code == 503
     assert response.json() == {"detail": "Document store unavailable"}
-    assert any(record.name == "api" and record.exc_info for record in caplog.records)
+    assert response.headers["X-Request-ID"] in caplog.text
 
 
 def test_unexpected_deletion_failure_is_private(client, services, caplog):
@@ -218,8 +198,6 @@ def test_unexpected_deletion_failure_is_private(client, services, caplog):
     services.pipeline.store.delete_document.side_effect = error
     response = client.delete("/documents/abc")
     assert response.status_code == 500
-    assert response.json() == {"detail": "Document deletion failed"}
-    assert any(
-        record.name == "api" and record.exc_info and record.exc_info[1] is error
-        for record in caplog.records
-    )
+    assert response.json() == {"detail": "Request failed"}
+    assert response.headers["X-Request-ID"] in caplog.text
+    assert str(error) not in caplog.text

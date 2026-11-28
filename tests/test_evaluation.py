@@ -30,7 +30,7 @@ def test_batch_judging_weights_and_jsonl(
         strict=True,
     ):
         assert call.kwargs["model"] == "judge"
-        assert metric in call.kwargs["messages"][0]["content"]
+        assert metric in call.kwargs["system"]
     assert [r.query for r in results] == ["why", "second"]
     first, second = results
     assert (
@@ -48,11 +48,9 @@ def test_batch_judging_weights_and_jsonl(
         second.overall_score,
     ) == (0, 0, 0, 0.8, 0.12)
     rows = [json.loads(line) for line in logs[1].read_text().splitlines()]
-    assert rows == [r.to_dict() for r in results]
+    assert rows == [{k: v for k, v in r.to_dict().items() if k not in {"query", "answer"}} for r in results]
     assert rows[0] == {
         "trace_id": "trace",
-        "query": "why",
-        "answer": "answer",
         "faithfulness": 0.2,
         "answer_relevance": 0.4,
         "context_precision": 1,
