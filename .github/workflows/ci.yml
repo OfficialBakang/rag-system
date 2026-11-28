@@ -53,7 +53,7 @@ jobs:
         run: python -m pip check
 
       - name: Run Ruff linting
-        run: python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py core/telemetry.py core/evals.py core/vector_store.py core/generator.py core/retriever.py core/embedder.py core/loader.py api.py rag_config.py api_security.py scripts/docker_smoke.py
+        run: python -m ruff check tests/ core/chunker.py core/ingestion_pipeline.py core/telemetry.py core/evals.py core/vector_store.py core/generator.py core/retriever.py core/embedder.py core/loader.py api.py rag_config.py api_security.py scripts/docker_smoke.py scripts/migration scripts/benchmark_storage.py
 
       - name: Prepare tokenizer cache
         run: python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); print('Tokenizer ready')"
@@ -68,6 +68,7 @@ jobs:
           --cov=api
           --cov=rag_config
           --cov=api_security
+          --cov=scripts.migration.import_bundle
           --cov-report=term-missing
           --cov-report=xml
           --cov-report=html

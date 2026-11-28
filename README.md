@@ -323,8 +323,8 @@ docker compose up --build -d
 curl.exe http://127.0.0.1:8000/health
 ```
 
-Compose binds port 8000 to loopback and mounts the named volume `rag-data` at
-`/app/data`. Chroma persists in `/app/data/chroma`, alongside the trace and
+Compose binds port 8000 to loopback and mounts the named volume `rag-qdrant-data` at
+`/app/data`. Chroma persists in `/app/data/qdrant`, alongside the trace and
 evaluation logs in the parent directory. Use `docker compose down` to shut down
 and `docker compose up -d` from the same project to recreate the service with
 its data. **`docker compose down -v` removes the persistent volume and its data.**
@@ -582,7 +582,7 @@ and application reliability.
 
 ### Verification
 
-Local verification on Windows with Python 3.12.10 passed 137 tests with 94.06% statement coverage. Bandit returned zero findings. The runtime dependency audit found four distinct ChromaDB advisories. See [SECURITY.md](SECURITY.md) for severity and release impact.
+Local verification on Windows with Python 3.12.10 passed 147 tests with 92.78% statement coverage (including migration importer). Bandit returned zero findings. The new Qdrant runtime audit returned zero known vulnerabilities. The historical Chroma distribution had four distinct advisories. See [SECURITY.md](SECURITY.md) for severity and release impact.
 
 CI requires at least 85% statement coverage across the core package, API, configuration and HTTP security module. The security job and hardened Docker smoke run require their own successful executions after these changes.
 
@@ -867,3 +867,27 @@ BEngTech Electrical & Electronics Engineering — University of Johannesburg
 ---
 
 Exploring reliable AI systems through retrieval, grounded generation, observability and systematic evaluation.
+
+
+## Qdrant compatibility prototype
+
+The runtime now uses qdrant-client 1.20.0 through the existing VectorStore methods.
+A single process owns trusted persistent storage under QDRANT_PERSIST_DIR.
+QDRANT_COLLECTION is deployment-controlled. Each operation is serialised with
+a reentrant lock. The first valid nonempty insertion establishes vector dimension.
+Every batch is validated before insertion. Cosine vectors are normalised by Qdrant,
+so compare direction and scores with tolerance 1e-5. Tied scores can change order.
+
+The separate Compose volume rag-qdrant-data protects the legacy volume during
+prototype testing. A legacy chroma.sqlite3 at the requested path is rejected.
+Default startup also rejects a detected legacy store when no new Qdrant store exists.
+Explicitly configured fresh paths support synthetic rehearsals.
+
+Metadata remains nested separately from chunk identity. Filters support one field
+per expression, scalar equality, $eq, $ne, numeric $gt/$gte/$lt/$lte, $in/$nin and
+nested $and/$or. Unsupported syntax raises an error. Field names use letters,
+numbers, underscore and hyphen.
+
+See docs/adr-qdrant.md for the decision, migration procedure and release gates.
+
+Measured prototype performance is recorded in docs/benchmark-results.md.

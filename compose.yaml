@@ -16,14 +16,14 @@ services:
         required: false
 
     environment:
-      CHROMA_PERSIST_DIR: /app/data/chroma
+      QDRANT_PERSIST_DIR: /app/data/qdrant
       TRACE_LOG_PATH: /app/data/traces.jsonl
       EVAL_LOG_PATH: /app/data/evals.jsonl
       TIKTOKEN_CACHE_DIR: /opt/tokenizer-cache
       OTEL_ENABLED: "false"
 
     volumes:
-      - rag-data:/app/data
+      - rag-qdrant-data:/app/data
 
     security_opt:
       - no-new-privileges:true
@@ -38,4 +38,4 @@ services:
     stop_grace_period: 30s
 
 volumes:
-  rag-data:
+  rag-qdrant-data:

@@ -71,3 +71,15 @@ pip-audit inspected the 101 installed distributions in the Python 3.12 runtime d
 | [CVE-2026-45830](https://github.com/advisories/GHSA-2wm9-hf6c-p5cr) | High | None |
 
 The app constructs an embedded PersistentClient and does not expose a Chroma server or delegate authorisation to Chroma RBAC. That reduces exposure to server-specific paths. The vulnerable distribution remains in the image and these findings block the dependency gate. Keep the service restricted while tracking upstream. Validate storage compatibility, existing collections and container recreation against a disposable copy before adopting a fixed release. An alternate database would require a separate migration.
+
+
+## Qdrant prototype storage
+
+The current runtime requires qdrant-client 1.20.0 and excludes Chroma.
+The Chroma findings above describe the legacy dependency and isolated exporter.
+Qdrant Local uses Python object deserialisation in its persistence layer.
+Protect the directory and restored backups against tampering. Restore only trusted
+backups. Collection names are deployment-controlled and validated. Local mode has
+one process owner and is unsuitable for sharing a directory across replicas.
+Use a new volume for migration. The historical Chroma environment is confined to
+one-time export from disposable copies with network access blocked.

@@ -32,7 +32,6 @@ from typing import Annotated
 
 import anthropic
 import openai
-from chromadb.errors import NotFoundError
 from fastapi import (
     APIRouter,
     Depends,
@@ -49,6 +48,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api_security import Access, Boundary, Role, ai_slot, authorize, origins
+from core.vector_store import StorageUnavailable
 from rag_config import ResourceLimit, flag, load_settings, smoke_test_mode
 
 load_settings()
@@ -583,7 +583,7 @@ async def delete_document(doc_id: str):
     """Remove all chunks belonging to a document by doc_id."""
     try:
         deleted = get_store().delete_document(doc_id)
-    except NotFoundError:
+    except StorageUnavailable:
         raise HTTPException(503, "Document store unavailable") from None
     return {"status": "ok", "deleted_chunks": deleted, "doc_id": doc_id}
 

@@ -56,7 +56,7 @@ def test_provider_routes_disabled(smoke, path, kwargs):
 
 def test_store_failure(smoke):
     store = api.app.state.store
-    store._client.delete_collection(store._col.name)
+    store.close()
     assert smoke.get("/live").status_code == 200
     assert smoke.get("/health").status_code == 503
     ready = smoke.get("/ready")

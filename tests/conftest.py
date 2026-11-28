@@ -80,7 +80,7 @@ def pytest_configure(config):
     for name, file in (
         ("TRACE_LOG_PATH", "trace.jsonl"),
         ("EVAL_LOG_PATH", "eval.jsonl"),
-        ("CHROMA_PERSIST_DIR", "chroma"),
+        ("QDRANT_PERSIST_DIR", "chroma"),
     ):
         patch.setenv(name, str(root / file))
 
@@ -149,9 +149,7 @@ def vector_store(tmp_path):
 
     store = VectorStore(str(tmp_path / "database"), "test_documents")
     yield store
-    close = getattr(store._client, "close", None)
-    if close:
-        close()
+    store.close()
 
 
 @pytest.fixture

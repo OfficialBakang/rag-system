@@ -66,3 +66,15 @@ coverage.xml
 # Local tokenizer cache
 .tokenizer-cache/
 
+# Python virtual environments
+.venv-qdrant/
+.venv-security/
+
+# Qdrant runtime storage
+data/qdrant/
+
+# Security scan reports
+audit.json
+bandit-report.json
+trivy-report.json
+

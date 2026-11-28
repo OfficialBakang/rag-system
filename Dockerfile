@@ -27,7 +27,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TIKTOKEN_CACHE_DIR=/opt/tokenizer-cache \
-    CHROMA_PERSIST_DIR=/app/data/chroma \
+    QDRANT_PERSIST_DIR=/app/data/qdrant \
     TRACE_LOG_PATH=/app/data/traces.jsonl \
     EVAL_LOG_PATH=/app/data/evals.jsonl \
     OTEL_ENABLED=false
@@ -37,7 +37,7 @@ WORKDIR /app
 RUN groupadd --gid 10001 appuser \
     && useradd --uid 10001 --gid 10001 \
        --create-home appuser \
-    && mkdir -p /app/data/chroma /opt/tokenizer-cache
+    && mkdir -p /app/data/qdrant /opt/tokenizer-cache
 
 COPY --from=builder /opt/venv /opt/venv
 

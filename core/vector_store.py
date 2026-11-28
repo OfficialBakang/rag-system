@@ -1,194 +1,239 @@
-"""
-Vector Store
-============
-ChromaDB wrapper that handles upsert, similarity search, and deletion.
+"""Persistent single-process Qdrant boundary. Storage and backups must be trusted."""
 
-Collection schema per record:
-  - id         : chunk_id (deterministic hash)
-  - embedding  : float list from the embedder
-  - document   : raw chunk text (returned alongside search results)
-  - metadata   : source, doc_id, chunk_index, token_count, title, ...
-
-Why ChromaDB?
-  - Runs fully in-process, zero infrastructure to set up
-  - Persistent on disk (sqlite + HNSW index)
-  - Swappable with Qdrant/Pinecone in production without changing retriever logic
-
-Usage:
-    store = VectorStore()
-    store.upsert(embedded_chunks)
-    results = store.query(query_vector, top_k=6)
-"""
-
-from __future__ import annotations
-
-import logging
+import json
+import math
 import os
+import re
+import threading
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
-import chromadb
-from chromadb.config import Settings
+from qdrant_client import QdrantClient, models
 
-from core.models import Chunk, EmbeddedChunk, RetrievedChunk
-from rag_config import smoke_test_mode
+from core.models import Chunk, RetrievedChunk
 
-logger = logging.getLogger(__name__)
 
-_DEFAULT_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma")
-_DEFAULT_COLLECTION  = os.getenv("CHROMA_COLLECTION", "rag_documents")
+class StorageUnavailable(RuntimeError):
+    """The configured store cannot serve the requested operation."""
+
+
+def metadata_filter(where):
+    if not isinstance(where, dict) or len(where) != 1:
+        raise ValueError("A filter must contain one field or logical operator")
+    key, value = next(iter(where.items()))
+    if key in {"$and", "$or"}:
+        if not isinstance(value, list) or len(value) < 2:
+            raise ValueError("Logical filters require at least two conditions")
+        conditions = [metadata_filter(item) for item in value]
+        return models.Filter(**{"must" if key == "$and" else "should": conditions})
+    if key.startswith("$") or not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        raise ValueError("Unsupported metadata field")
+    operator, operand = ("$eq", value)
+    if isinstance(value, dict):
+        if len(value) != 1:
+            raise ValueError("Invalid filter operator")
+        operator, operand = next(iter(value.items()))
+    field = "metadata." + key
+    if operator in {"$eq", "$ne"}:
+        if isinstance(operand, float):
+            condition = models.FieldCondition(
+                key=field, range=models.Range(gte=operand, lte=operand)
+            )
+        elif isinstance(operand, (str, int, bool)):
+            condition = models.FieldCondition(
+                key=field, match=models.MatchValue(value=operand)
+            )
+        else:
+            raise ValueError("Invalid filter value")
+        return models.Filter(
+            **{"must_not" if operator == "$ne" else "must": [condition]}
+        )
+    if operator in {"$gt", "$gte", "$lt", "$lte"} and type(operand) in {float, int}:
+        return models.Filter(
+            must=[
+                models.FieldCondition(
+                    key=field, range=models.Range(**{operator[1:]: operand})
+                )
+            ]
+        )
+    if operator in {"$in", "$nin"} and isinstance(operand, list) and operand:
+        parts = [metadata_filter({key: item}) for item in operand]
+        return models.Filter(**{"must_not" if operator == "$nin" else "should": parts})
+    raise ValueError("Unsupported metadata filter")
 
 
 class VectorStore:
-    """
-    Persistent ChromaDB collection with a clean upsert / query / delete API.
-
-    Parameters
-    ----------
-    persist_dir  : directory where ChromaDB stores its sqlite + index files
-    collection   : name of the ChromaDB collection
-    """
-
-    def __init__(
-        self,
-        persist_dir: str = _DEFAULT_PERSIST_DIR,
-        collection: str = _DEFAULT_COLLECTION,
-    ):
-        Path(persist_dir).mkdir(parents=True, exist_ok=True)
-        settings = Settings(anonymized_telemetry=False)
-        if smoke_test_mode():
-            settings.chroma_otel_collection_endpoint = ""
-            settings.chroma_otel_granularity = "none"
-        self._client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=settings,
+    def __init__(self, persist_dir=None, collection=None):
+        self.path = Path(
+            persist_dir or os.getenv("QDRANT_PERSIST_DIR", "./data/qdrant")
         )
-        self._col = self._client.get_or_create_collection(
-            name=collection,
-            metadata={"hnsw:space": "cosine"},   # cosine similarity
-        )
-        logger.info(
-            "VectorStore ready — collection=%r, docs=%d",
-            collection,
-            self._col.count(),
-        )
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def upsert(self, embedded_chunks: list[EmbeddedChunk]) -> int:
-        """
-        Insert or update embedded chunks in the collection.
-        Idempotent: re-upserting the same chunk_id overwrites in place.
-        Returns the number of records upserted.
-        """
-        if not embedded_chunks:
-            return 0
-
-        ids        = [ec.chunk.chunk_id for ec in embedded_chunks]
-        embeddings = [ec.embedding      for ec in embedded_chunks]
-        documents  = [ec.chunk.text     for ec in embedded_chunks]
-        metadatas  = [self._safe_meta(ec.chunk) for ec in embedded_chunks]
-
-        self._col.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            documents=documents,
-            metadatas=metadatas,
-        )
-        logger.info("Upserted %d chunks — collection total: %d", len(ids), self._col.count())
-        return len(ids)
-
-    def query(
-        self,
-        query_vector: list[float],
-        top_k: int = 6,
-        where: dict | None = None,
-    ) -> list[RetrievedChunk]:
-        """
-        Cosine similarity search.
-
-        Parameters
-        ----------
-        query_vector : embedded query from Embedder.embed_query()
-        top_k        : number of results to return
-        where        : optional ChromaDB metadata filter, e.g. {"source": "report.pdf"}
-
-        Returns a list of RetrievedChunk sorted by descending similarity score.
-        """
-        kwargs: dict = {
-            "query_embeddings": [query_vector],
-            "n_results": min(top_k, self._col.count() or 1),
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-
-        raw = self._col.query(**kwargs)
-
-        results: list[RetrievedChunk] = []
-        for i, (doc_text, meta, dist) in enumerate(
-            zip(raw["documents"][0], raw["metadatas"][0], raw["distances"][0])
+        self.collection = collection or os.getenv("QDRANT_COLLECTION", "rag_documents")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.collection):
+            raise ValueError("Invalid collection name")
+        if (self.path / "chroma.sqlite3").exists():
+            raise StorageUnavailable("Legacy storage requires explicit migration")
+        legacy = Path(os.getenv("CHROMA_PERSIST_DIR", "./data/chroma"))
+        if (
+            persist_dir is None
+            and (legacy / "chroma.sqlite3").exists()
+            and not (self.path / "meta.json").exists()
         ):
-            # ChromaDB returns L2 distance for cosine space — convert to similarity
-            similarity = 1.0 - dist
-
-            chunk = Chunk(
-                chunk_id=raw["ids"][0][i],
-                doc_id=meta.get("doc_id", "unknown"),
-                text=doc_text,
-                index=int(meta.get("chunk_index", i)),
-                token_count=int(meta.get("token_count", 0)),
-                metadata=meta,
+            raise StorageUnavailable(
+                "Legacy storage detected; explicit migration required"
             )
-            results.append(
-                RetrievedChunk(chunk=chunk, score=round(similarity, 4), rank=i + 1)
-            )
+        self.lock = threading.RLock()
+        self.closed = False
+        self.path.mkdir(parents=True, exist_ok=True)
+        self.client = QdrantClient(
+            path=str(self.path), force_disable_check_same_thread=True
+        )
+        self.dimension = None
+        if self.client.collection_exists(self.collection):
+            self.dimension = self.client.get_collection(
+                self.collection
+            ).config.params.vectors.size
 
-        return results
+    def _check(self):
+        if self.closed:
+            raise StorageUnavailable("Store closed")
+        if self.dimension is not None and not self.client.collection_exists(
+            self.collection
+        ):
+            raise StorageUnavailable("Collection unavailable")
 
-    def delete_document(self, doc_id: str) -> int:
-        """
-        Remove all chunks belonging to a document.
-        Returns the number of chunks deleted.
-        """
-        existing = self._col.get(where={"doc_id": doc_id})
-        ids_to_delete = existing["ids"]
-        if ids_to_delete:
-            self._col.delete(ids=ids_to_delete)
-        logger.info("Deleted %d chunks", len(ids_to_delete))
-        return len(ids_to_delete)
-
-    def close(self) -> None:
-        self._client.close()
-
-    def count(self) -> int:
-        """Total number of chunks in the collection."""
-        return self._col.count()
-
-    def list_sources(self) -> list[str]:
-        """Return unique source file names stored in the collection."""
-        all_meta = self._col.get(include=["metadatas"])["metadatas"]
-        return sorted({m.get("source", "unknown") for m in all_meta})
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    def point_id(self, chunk_id):
+        return str(uuid5(NAMESPACE_URL, self.collection + ":" + chunk_id))
 
     @staticmethod
-    def _safe_meta(chunk: Chunk) -> dict:
-        """
-        ChromaDB metadata values must be str | int | float | bool.
-        Flatten and sanitise the chunk metadata dict.
-        """
-        safe: dict = {
-            "doc_id": chunk.doc_id,
-            "chunk_index": chunk.index,
-            "token_count": chunk.token_count,
-        }
-        for k, v in chunk.metadata.items():
-            if isinstance(v, (str, int, float, bool)):
-                safe[k] = v
-            else:
-                safe[k] = str(v)   # coerce lists, dicts, etc.
-        return safe
+    def _vector(vector):
+        values = list(vector)
+        if not values or any(
+            type(v) not in {int, float} or not math.isfinite(v) for v in values
+        ):
+            raise ValueError("Invalid vector")
+        if not any(values):
+            raise ValueError("Cosine vectors must be nonzero")
+        return values
+
+    def upsert(self, embedded_chunks):
+        with self.lock:
+            self._check()
+            points = []
+            dimension = self.dimension
+            for item in embedded_chunks:
+                vector = self._vector(item.embedding)
+                dimension = dimension or len(vector)
+                if len(vector) != dimension:
+                    raise ValueError("Vector dimension mismatch")
+                chunk = item.chunk
+                if not isinstance(chunk.chunk_id, str) or not chunk.chunk_id:
+                    raise ValueError("Invalid chunk identifier")
+                metadata = json.loads(json.dumps(chunk.metadata, allow_nan=False))
+                points.append(
+                    models.PointStruct(
+                        id=self.point_id(chunk.chunk_id),
+                        vector=vector,
+                        payload={
+                            "chunk_id": chunk.chunk_id,
+                            "doc_id": chunk.doc_id,
+                            "index": chunk.index,
+                            "token_count": chunk.token_count,
+                            "text": chunk.text,
+                            "metadata": metadata,
+                        },
+                    )
+                )
+            if not points:
+                return 0
+            if self.dimension is None:
+                self.client.create_collection(
+                    self.collection,
+                    vectors_config=models.VectorParams(
+                        size=dimension, distance=models.Distance.COSINE
+                    ),
+                )
+                self.dimension = dimension
+            self.client.upsert(self.collection, points, wait=True)
+            return len(points)
+
+    def query(self, query_vector, top_k=6, where=None):
+        vector = self._vector(query_vector)
+        condition = metadata_filter(where) if where is not None else None
+        if not isinstance(top_k, int) or top_k < 1:
+            raise ValueError("Invalid retrieval limit")
+        with self.lock:
+            self._check()
+            if self.dimension is None:
+                return []
+            if len(vector) != self.dimension:
+                raise ValueError("Vector dimension mismatch")
+            hits = self.client.query_points(
+                self.collection, query=vector, limit=top_k, query_filter=condition
+            ).points
+            return [
+                RetrievedChunk(
+                    Chunk(
+                        h.payload["chunk_id"],
+                        h.payload["doc_id"],
+                        h.payload["text"],
+                        h.payload["index"],
+                        h.payload["token_count"],
+                        h.payload["metadata"],
+                    ),
+                    round(h.score, 4),
+                    i + 1,
+                )
+                for i, h in enumerate(hits)
+            ]
+
+    def count(self):
+        with self.lock:
+            self._check()
+            return (
+                self.client.count(self.collection, exact=True).count
+                if self.dimension
+                else 0
+            )
+
+    def list_sources(self):
+        with self.lock:
+            self._check()
+            if not self.dimension:
+                return []
+            sources = set()
+            offset = None
+            while True:
+                points, offset = self.client.scroll(
+                    self.collection, offset=offset, limit=256, with_vectors=False
+                )
+                sources.update(
+                    p.payload["metadata"].get("source", "unknown") for p in points
+                )
+                if offset is None:
+                    return sorted(sources)
+
+    def delete_document(self, doc_id):
+        with self.lock:
+            self._check()
+            if not self.dimension:
+                return 0
+            condition = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="doc_id", match=models.MatchValue(value=doc_id)
+                    )
+                ]
+            )
+            count = self.client.count(
+                self.collection, count_filter=condition, exact=True
+            ).count
+            self.client.delete(
+                self.collection, models.FilterSelector(filter=condition), wait=True
+            )
+            return count
+
+    def close(self):
+        with self.lock:
+            if not self.closed:
+                self.client.close()
+                self.closed = True

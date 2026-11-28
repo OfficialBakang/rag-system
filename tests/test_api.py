@@ -186,7 +186,7 @@ def test_delete_missing_collection_returns_unavailable(
     client, services, vector_store, caplog
 ):
     services.pipeline.store = vector_store
-    vector_store._client.delete_collection(vector_store._col.name)
+    vector_store.close()
     response = client.delete("/documents/abc")
     assert response.status_code == 503
     assert response.json() == {"detail": "Document store unavailable"}

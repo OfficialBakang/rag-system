@@ -114,6 +114,8 @@ import os
 from pathlib import Path
 from tempfile import TemporaryFile
 import tiktoken
+import importlib.util
+assert importlib.util.find_spec('chromadb') is None
 assert os.geteuid() == 10001
 uid_line = next(line for line in Path('/proc/1/status').read_text().splitlines()
                 if line.startswith('Uid:'))
